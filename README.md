@@ -11,7 +11,7 @@ conda env create -f astroworld.yml
 conda activate astroworld
 
 Update your ~/.bashrc to include the respository (and VIP if you have it) in your PYTHONPATH:  
-export PYTHONPATH=/mnt/data0/isabel/FlatTesting/:/mnt/data0/isabel/externalrepositories/VIP/:/home/isabel/src/:/home/isabel/src/MEDIS:/home/isabel/src/:/home/isabel/src/MKIDAnalysis:$PATH
+export PYTHONPATH=/mnt/data0/isabel/externalrepositories/VIP/:/home/isabel/src/:/home/isabel/src/MEDIS:/home/isabel/src/MKIDAnalysis:$PATH
 
 Install VIP (optional for now):
 Follow instructions here:  https://vip.readthedocs.io/en/latest/
