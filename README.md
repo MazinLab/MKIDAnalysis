@@ -4,8 +4,10 @@ High contrast imaging analysis functions
 You will need to enter the astroworld (clone of pipeline.yml, has all the astro things like photutils, astropy, etc)
 
 conda env create -f astroworld.yml
+
 conda activate astroworld
 
+#Install VIP (optional for now)
 You might also want to install VIP (we are not currently using VIP though so this can wait)
 Follow instructions here:  https://vip.readthedocs.io/en/latest/
 Use the GIT repository:  git clone https://github.com/vortex-exoplanet/VIP.git
