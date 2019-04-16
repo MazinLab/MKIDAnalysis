@@ -7,8 +7,9 @@ conda env create -f astroworld.yml
 
 conda activate astroworld
 
-Install VIP (optional for now)
-You might also want to install VIP (we are not currently using VIP though so this can wait)
+
+
+Install VIP (optional for now):
 Follow instructions here:  https://vip.readthedocs.io/en/latest/
 Use the GIT repository:  git clone https://github.com/vortex-exoplanet/VIP.git
 
@@ -30,3 +31,5 @@ Googling showed that we need to upgrade scikit-image because that numpy function
 pip install --upgrade scikit-image
 
 Now we can import VIP
+
+import vip_hci as vip
