@@ -7,7 +7,7 @@ conda env create -f astroworld.yml
 
 conda activate astroworld
 
-#Install VIP (optional for now)
+Install VIP (optional for now)
 You might also want to install VIP (we are not currently using VIP though so this can wait)
 Follow instructions here:  https://vip.readthedocs.io/en/latest/
 Use the GIT repository:  git clone https://github.com/vortex-exoplanet/VIP.git
