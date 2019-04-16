@@ -1,13 +1,17 @@
 # MKIDAnalysis
 High contrast imaging analysis functions
 
+Clone or download in desired directory:
+git clone https://github.com/MazinLab/MKIDAnalysis.git
+
 You will need to enter the astroworld (clone of pipeline.yml, has all the astro things like photutils, astropy, etc)
 
 conda env create -f astroworld.yml
 
 conda activate astroworld
 
-
+Update your ~/.bashrc to include the respository (and VIP if you have it) in your PYTHONPATH:  
+export PYTHONPATH=/mnt/data0/isabel/FlatTesting/:/mnt/data0/isabel/externalrepositories/VIP/:/home/isabel/src/:/home/isabel/src/MEDIS:/home/isabel/src/:/home/isabel/src/MKIDAnalysis:$PATH
 
 Install VIP (optional for now):
 Follow instructions here:  https://vip.readthedocs.io/en/latest/
