@@ -13,6 +13,8 @@ conda activate astroworld
 Update your ~/.bashrc to include the respository (and VIP if you have it) in your PYTHONPATH:  
 export PYTHONPATH=/mnt/data0/isabel/externalrepositories/VIP/:/home/isabel/src/:/home/isabel/src/MEDIS:/home/isabel/src/MKIDAnalysis:$PATH
 
+If this is correct you should be able to 'import MKIDAnalysis' in ipython
+
 Install VIP (optional for now):
 Follow instructions here:  https://vip.readthedocs.io/en/latest/
 Use the GIT repository:  git clone https://github.com/vortex-exoplanet/VIP.git
