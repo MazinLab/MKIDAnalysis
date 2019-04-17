@@ -1,133 +1,16 @@
 import glob
 import numpy as np
-import pyximport;
 
-pyximport.install()
 from mkidpipeline import badpix as bp
 from mkidpipeline.hdf.photontable import ObsFile as obs
 from mkidpipeline.utils.plottingTools import plot_array as pa
-
-from astropy.convolution import AiryDisk2DKernel, Gaussian2DKernel, convolve
 from scipy.optimize import curve_fit
-import skimage.transform as tf
-from scipy import ndimage
-from astropy.modeling.functional_models import AiryDisk2D
-from mkidcore.instruments import CONEX2PIXEL
 
-from astropy.io import fits
-from astropy.coordinates import SkyCoord
-import astropy.units as units
-from scipy.interpolate import griddata
 from scipy.ndimage.filters import median_filter
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 
-from astropy.io import fits
-
-from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, centroid_com, CircularAperture, \
-    aperture_photometry
-
-
-def ditherp_2_pixel(positions):
-    """ A function to convert the connex offset to pixel displacement"""
-    positions = np.asarray(positions)
-    pix = np.asarray(CONEX2PIXEL(positions[:, 0], positions[:, 1])) - np.array(CONEX2PIXEL(0, 0)).reshape(2, 1)
-    return pix
-
-
-def func(x, slope, intercept):
-    return x * slope + intercept
-
-
-def upsample_image(image, npix):
-    """
-    Upsamples the array so that the rotation and shift can be done to subpixel precision
-    each pixel will be converted in a square of nPix*nPix
-    """
-    upsampled = image.repeat(npix, axis=0).repeat(npix, axis=1)
-    return upsampled
-
-
-def median_stack(stack):
-    return np.nanmedian(stack, axis=0)
-
-
-def mean_stack(stack):
-    return np.nanmean(stack, axis=0)
-
-
-def negatives_to_nans(image):
-    image = image.astype(float)
-    image[image < 0] = np.nan
-    return image
-
-
-def dist(yc, xc, y1, x1):
-    """
-    Return the Euclidean distance between two points.
-    """
-    return np.sqrt((yc - y1) ** 2 + (xc - x1) ** 2)
-
-
-def embed_image(image, framesize=1, pad_value=-1):
-    """
-    Gets a numpy array and -1-pads it. The frame size gives the dimension of the frame in units of the
-    biggest dimension of the array (if image.shape gives (2,4), then 4 rows of -1s will be added before and
-    after the array and 4 columns of -1s will be added before and after. The final size of the array will be (10,12))
-    It is padding with -1 and not 0s to distinguish the added pixels from valid pixels that have no photons. Masked pixels
-    (dead or hot) are nan
-    It returns a numpy array
-    """
-    frame_pixsize = int(max(image.shape) * framesize)
-    padded_array = np.pad(image, frame_pixsize, 'constant', constant_values=pad_value)
-    return padded_array
-
-
-def rotate_shift_image(image, degree, xshift, yshift):
-    """
-    Rotates the image counterclockwise and shifts it in x and y
-    When shifting, the pixel that exit one side of the array get in from the other side. Make sure that
-    the padding is large enough so that only -1s roll and not real pixels
-    """
-    ###makes sure that the shifts are integers
-    xshift = int(round(xshift))
-    yshift = int(round(yshift))
-    rotated_image = ndimage.rotate(image, degree, order=0, cval=-1, reshape=False)
-    rotated_image = negatives_to_nans(rotated_image)
-
-    xshifted_image = np.roll(rotated_image, xshift, axis=1)
-    rotated_shifted = np.roll(xshifted_image, yshift, axis=0)
-    return rotated_shifted
-
-
-def interpolate_image(image, method='linear'):
-    '''
-    2D interpolation to smooth over missing pixels using built-in scipy methods
-
-    INPUTS:
-        image - 2D input array of values
-        method - method of interpolation. Options are scipy.interpolate.griddata methods:
-                 'linear' (default), 'cubic', or 'nearest'
-
-    OUTPUTS:
-        the interpolated image with same shape as input array
-    '''
-
-    finalshape = np.shape(image)
-
-    datapoints = np.where(
-        np.logical_or(np.isnan(image), image == 0) == False)  # data points for interp are only pixels with counts
-    data = image[datapoints]
-    datapoints = np.array((datapoints[0], datapoints[1]),
-                          dtype=np.int).transpose()  # griddata expects them in this order
-
-    interppoints = np.where(image != np.nan)  # should include all points as interpolation points
-    interppoints = np.array((interppoints[0], interppoints[1]), dtype=np.int).transpose()
-
-    interpolated_frame = griddata(datapoints, data, interppoints, method)
-    interpolated_frame = np.reshape(interpolated_frame, finalshape)  # reshape interpolated frame into original shape
-
-    return interpolated_frame
+from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, centroid_com, CircularAperture, aperture_photometry
+from analysis_utils import *
 
 
 def align_stack_image(output_dir, output_filename, int_time, xcon, ycon):
@@ -170,8 +53,8 @@ def align_stack_image(output_dir, output_filename, int_time, xcon, ycon):
 
     pad_fraction = .8
 
-    xopt, xcov = curve_fit(func, np.array([-0.035, 0.23, 0.495]), np.array([125.12754088, 106.53992258, 92.55050812]), sigma=np.array([0.33597449, 0.82476065, 1.6125932 ]))
-    yopt, ycov = curve_fit(func, np.array([-0.76, -0.38, 0., 0.38]), np.array([36.53739721, 61.29792346, 90.77367552, 115.0451042 ]), sigma=np.array([1., 0.13307094, 1.26640359, 0.38438538]))
+    xopt, xcov = curve_fit(linear_func, np.array([-0.035, 0.23, 0.495]), np.array([125.12754088, 106.53992258, 92.55050812]), sigma=np.array([0.33597449, 0.82476065, 1.6125932 ]))
+    yopt, ycov = curve_fit(linear_func, np.array([-0.76, -0.38, 0., 0.38]), np.array([36.53739721, 61.29792346, 90.77367552, 115.0451042 ]), sigma=np.array([1., 0.13307094, 1.26640359, 0.38438538]))
 
     xpos = np.array(xcon) * xopt[0] + xopt[1]
     ypos = np.array(ycon) * yopt[0] + yopt[1]
