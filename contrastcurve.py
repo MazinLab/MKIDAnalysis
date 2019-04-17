@@ -282,7 +282,6 @@ def prepare_forCC(datafile, outfile_name, interp_bool=True, smooth_bool=True, xc
 
 def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51EriUnocculted.npy',
                        badpix_bool=False, normalize=1, plot_bool=False, fwhm_est=8, nlod=12, **fluxestkwargs):
-    normalize = 390908.2702642
     if unocculted:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
@@ -331,7 +330,6 @@ def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt
 
 def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51EriUnocculted.npy',
             badpix_bool=False, normalize=1, fwhm_est=8, nlod=12, plot=False, mec_hack=False, **fluxestkwargs):
-    normalize = 390908.2702642
     if unocculted:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
