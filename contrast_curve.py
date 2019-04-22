@@ -13,10 +13,10 @@ from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, cent
 from analysis_utils import *
 
 
-def align_stack_image(output_dir, output_filename, int_time, xcon, ycon):
+def align_stack_image(output_dir, target_info, int_time, xcon, ycon, make_numpy=True, save_shifts=True, hpm_again=True, combination_mode='median'):
     """
     output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
-    output_filename='51EriDither3'
+    target_info='51EriDither3'
     int_time=60
     xcon = [-0.1, -0.1, -0.1, -0.1, -0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.2, 0.2, 0.2, 0.2, 0.2, 0.35, 0.35, 0.35, 0.35, 0.35, 0.5, 0.5, 0.5, 0.5, 0.5]
     ycon = [-0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5]
@@ -29,22 +29,28 @@ def align_stack_image(output_dir, output_filename, int_time, xcon, ycon):
     wvlStop = 1140
 
     numpyfxnlist = []
-    for i in range(npos):
-        obsfile = obs(obsfile_list[i], mode='write')
-        img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
-                                         wvlStart=wvlStart, wvlStop=wvlStop)
-        print(
-        'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
-        'to ', wvlStop)
-        obsfile.file.close()
-        saveim = np.transpose(img['image'])
 
-        print('applying HPM to ', i)
-        dead_mask = saveim == 0
-        fluxbox = bp.hpm_flux_threshold(saveim, fwhm=4, dead_mask=dead_mask)
-        outfile = output_dir + output_filename + 'HPMasked%i.npy' % i
-        np.save(outfile, fluxbox['image'])
-        numpyfxnlist.append(outfile)
+    if make_numpy:
+        for i in range(npos):
+            obsfile = obs(obsfile_list[i], mode='write')
+            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
+                                             wvlStart=wvlStart, wvlStop=wvlStop)
+            print(
+            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
+            'to ', wvlStop)
+            obsfile.file.close()
+            saveim = np.transpose(img['image'])
+
+            print('applying HPM to ', i)
+            dead_mask = saveim == 0
+            fluxbox = bp.hpm_flux_threshold(saveim, fwhm=4, dead_mask=dead_mask)
+            outfile = output_dir + target_info + 'HPMasked%i.npy' % i
+            np.save(outfile, fluxbox['image'])
+            numpyfxnlist.append(outfile)
+    else:
+        for i in range(npos):
+            outfile = output_dir + target_info + 'HPMasked%i.npy' % i
+            numpyfxnlist.append(outfile)
 
     rough_shiftsx = []
     rough_shiftsy = []
@@ -70,6 +76,7 @@ def align_stack_image(output_dir, output_filename, int_time, xcon, ycon):
 
     # load dithered science frames
     dither_frames = []
+    dither_frame_list=[]
     for i in range(npos):
         image = np.load(numpyfxnlist[i]) / int_time  # divide by eff int time
         image[image == 0] = ['nan']
@@ -79,16 +86,52 @@ def align_stack_image(output_dir, output_filename, int_time, xcon, ycon):
         centroidsy.append(refpointy - dys[i])
         padded_frame = embed_image(image, framesize=pad_fraction)
         shifted_frame = rotate_shift_image(padded_frame, 0, dxs[i], dys[i])
-
         dither_frames.append(shifted_frame)
+        if save_shifts:
+            shifted_file=output_dir + target_info + 'HPMasked_Shifted%i.npy' % i
+            np.save(shifted_file, shifted_frame)
+            dither_frame_list.append(shifted_file)
 
-    final_image = median_stack(np.array(dither_frames))
-    dead_mask = np.isnan(final_image)
-    reHPM = bp.hpm_flux_threshold(final_image, fwhm=4, dead_mask=dead_mask)
-    outfilestack = output_dir + output_filename + '_medianstacked_exptimeNORM'
-    np.save(outfilestack, reHPM['image'])
-    pa(reHPM['image'])
+    if combination_mode=='median':
+        final_image = median_stack(np.array(dither_frames))
+        outfile = output_dir + target_info + '_medianstacked_exptimeNORM'
 
+    if combination_mode=='mean':
+        final_image = median_stack(np.array(dither_frames))
+        outfile = output_dir + target_info + '_meanstacked_exptimeNORM'
+
+    outfilestack = output_dir + target_info + '_stack_exptimeNORM'
+
+    if hpm_again:
+        final_image=quick_hpm(final_image, outfile, save=False)
+        outfile=outfile+'_HPMAgain'
+    pa(final_image)
+    np.save(outfile, final_image)
+    np.save(outfilestack, dither_frames)
+
+
+def quick_hpm(image, outfilename, save=True):
+    dead_mask = np.isnan(image)
+    reHPM = bp.hpm_flux_threshold(image, fwhm=4, dead_mask=dead_mask)
+    if save:
+        np.save(outfilename, reHPM['image'])
+        pa(reHPM['image'])
+    else:
+        return reHPM['image']
+
+def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):
+    dither_frames=np.load(ditherframe_file)
+    PSF=np.load(PSF_file)
+    for i in range(npos):
+        dither_frames[i,:,:]=dither_frames[i,:,:]-PSF
+    if combination_mode=='median':
+        outfilesub = target_info+ '_medianstacked_PSFSub'
+        PSF_sub=median_stack(dither_frames)
+    if combination_mode=='mean':
+        outfilesub = target_info + '_meanstacked_PSFSub'
+        PSF_sub = mean_stack(dither_frames)
+    np.save(outfilesub, PSF_sub)
+    pa(PSF_sub)
 
 def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=False, ND_filter_bool=True,
                    sat_spotcorr=5.5, ND_filtercorr=1):
@@ -125,8 +168,8 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
     norm = phot_table['aperture_sum'].data
 
     if sat_spot_bool:
-        norm = norm * sat_spotcorr
-        factor = (1 / sat_spotcorr)
+        norm = norm * (10 ** (sat_spotcorr / 2.5))
+        factor = (1 / (10 ** (sat_spotcorr / 2.5)))
 
     if ND_filter_bool:
         factor = 10 ** (-ND_filtercorr)
@@ -135,15 +178,15 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
     return {'norm': norm, 'xpos': xpos, 'ypos': ypos, 'factor': factor}
 
 
-def prepare_forCC(datafile, outfile_name, interp_bool=True, smooth_bool=True, xcenter=242, ycenter=180, box_size=100):
+def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242, ycenter=180, box_size=100):
     data = np.load(datafile)
 
-    if interp_bool:
+    if interp:
         datainterp = interpolate_image(data)
-        if smooth_bool:
+        if smooth:
             proc_data = median_filter(datainterp, size=3)
 
-    elif smooth_bool:
+    elif smooth:
         proc_data = median_filter(data, size=3)
 
     else:
@@ -163,7 +206,7 @@ def prepare_forCC(datafile, outfile_name, interp_bool=True, smooth_bool=True, xc
     np.save(outfile_name, data_cropped)
 
 
-def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51EriUnocculted.npy',
+def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
                        badpix_bool=False, normalize=1, plot_bool=False, fwhm_est=8, nlod=12, **fluxestkwargs):
     if unocculted:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
@@ -211,9 +254,9 @@ def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt
     plt.show()
 
 
-def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51EriUnocculted.npy',
-            badpix_bool=False, normalize=1, fwhm_est=8, nlod=12, plot=False, mec_hack=False, **fluxestkwargs):
-    if unocculted:
+def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
+            badpix_bool=False, calc_flux=False, normalize=1, fwhm_est=8, nlod=12, plot=False, verbose=False, **fluxestkwargs):
+    if unocculted and calc_flux:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
         factor = normdict['factor']
@@ -262,7 +305,6 @@ def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/micr
         f_source = fluxes[0].copy()
         fluxes = fluxes[1:]
         n2 = fluxes.shape[0]
-        ##snr = (f_source - np.nanmean(fluxes))/(np.nanstd(fluxes)*np.sqrt(1+(1/n2)))
         snr = (normalize - np.nanmean(fluxes)) / (np.nanstd(fluxes) * np.sqrt(1 + (1 / n2)))
 
         if plot:
@@ -286,13 +328,83 @@ def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/micr
         spSNRs.append(snr)
 
     spMeans0 = np.array(spMeans0)
-    print('spMeans0', spMeans0)
     spMeans = np.array(spMeans)
-    print('spMeans', spMeans)
     spStds = np.array(spStds)
-    print('spStds', spStds)
     spSNRs = np.array(spSNRs)
-    print('spSNRs', 1 / spSNRs)
+
+    if verbose:
+        print('Source Flux', spMeans0)
+        print('Mean of the Fluxes in the Lamda/D circle', spMeans)
+        print('Std Dev of the Fluxes in the Lambda/D circle', spStds)
+        print('SNRs', 1 / spSNRs)
+
+    if unocculted:
+        psf=np.load(unoccultedfile)
+
+        # pixel coords of center of images.  Assume images are already centered
+        centerx = int(psf.shape[1] / 2)
+        centery = int(psf.shape[0] / 2)
+
+        dead_mask = np.isnan(psf)
+
+        psfMeans0 = [0]
+        psfMeans = [0]
+        psfStds = [0]
+        psfSNRs = [0]
+
+        for i in np.arange(nlod) + 1:
+            sourcex = centerx
+            sourcey = centery - i * lod
+            sep = dist(centery, centerx, sourcey, sourcex)
+
+            angle = np.arcsin(lod / 2. / sep) * 2
+            number_apertures = int(np.floor((2) * np.pi / angle))
+            yy = np.zeros((number_apertures))
+            xx = np.zeros((number_apertures))
+            cosangle = np.cos(angle)
+            sinangle = np.sin(angle)
+            xx[0] = sourcex - centerx
+            yy[0] = sourcey - centery
+            for j in range(number_apertures - 1):
+                xx[j + 1] = cosangle * xx[j] + sinangle * yy[j]
+                yy[j + 1] = cosangle * yy[j] - sinangle * xx[j]
+
+            xx[:] += centerx
+            yy[:] += centery
+            rad = lod / 2.
+            apertures = CircularAperture((xx, yy), r=rad)  # Coordinates (X,Y)
+            fluxes = aperture_photometry(psf, apertures, method='exact')
+            fluxes = np.array(fluxes['aperture_sum'])
+
+            f_source = fluxes[0].copy()
+            fluxes = fluxes[1:]
+            n2 = fluxes.shape[0]
+            snr = (normalize - np.nanmean(fluxes)) / (np.nanstd(fluxes) * np.sqrt(1 + (1 / n2)))
+
+            if plot:
+                fig, ax = plt.subplots(figsize=(6, 6))
+                ax.imshow(psf, origin='lower', interpolation='nearest', alpha=0.5,
+                          cmap='gray')
+                for i in range(xx.shape[0]):
+                    # Circle takes coordinates as (X,Y)
+                    aper = plt.Circle((xx[i], yy[i]), radius=lod / 2., color='r', fill=False, alpha=0.8)
+                    ax.add_patch(aper)
+                    cent = plt.Circle((xx[i], yy[i]), radius=0.8, color='r', fill=True, alpha=0.5)
+                    ax.add_patch(cent)
+                    aper_source = plt.Circle((sourcex, sourcey), radius=0.7, color='b', fill=True, alpha=0.5)
+                    ax.add_patch(aper_source)
+                ax.grid(False)
+                plt.show()
+
+            psfMeans0.append(f_source)
+            psfMeans.append(np.nanmean(fluxes))
+            psfStds.append(np.nanstd(fluxes))
+            psfSNRs.append(snr)
+
+        psfMeans0 = np.array(psfMeans0)
+        psfMeans = np.array(psfMeans)
+        psfStds = np.array(psfStds)
+        psfSNRs = np.array(psfSNRs)
 
     fig, ax1 = plt.subplots()
 
@@ -302,7 +414,7 @@ def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/micr
              label=r'Square Root of the Azimuthally Averaged Mean Coronagraphic Intensity')
 
     if unocculted:
-        ax1.plot(sep, psfMeans / norm, linewidth=2, label=r'Unocculted PSF Profile')
+        ax1.plot(sep_full[1:], (psfMeans[1:]/factor) / norm, linewidth=2, label=r'Unocculted PSF Profile')
 
     ax1.set_xlabel(r'Separation ($\lambda$/D)', fontsize=14)
     ax1.set_ylabel(r'Normalized by Unocculted PSF Intensity', fontsize=14)
