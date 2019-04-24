@@ -13,7 +13,7 @@ from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, cent
 from analysis_utils import *
 
 
-def align_stack_image(output_dir, target_info, int_time, xcon, ycon, make_numpy=True, save_shifts=True, hpm_again=True, combination_mode='median'):
+def align_stack_image(output_dir, target_info, int_time, xcon, ycon, divide_by_int_time=True, make_numpy=True, save_shifts=True, hpm_again=True):
     """
     output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
     target_info='51EriDither3'
@@ -76,38 +76,63 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, make_numpy=
 
     # load dithered science frames
     dither_frames = []
+    eff_int_time_frames = []
+    ideal_int_time_frames = []
     dither_frame_list=[]
+
     for i in range(npos):
-        image = np.load(numpyfxnlist[i]) / int_time  # divide by eff int time
+        image=np.load(numpyfxnlist[i])
         image[image == 0] = ['nan']
         rough_shiftsx.append(dxs[i])
         rough_shiftsy.append(dys[i])
         centroidsx.append(refpointx - dxs[i])
         centroidsy.append(refpointy - dys[i])
+        if divide_by_int_time:
+            image = image / int_time  # divide by eff int time
+            ideal_int_time = np.full_like(image, fill_value=1)
+            eff_int_time = np.full_like(image, fill_value=1)
+        else:
+            eff_int_time = np.full_like(image, fill_value=int_time)
+            ideal_int_time = np.full_like(image, fill_value=int_time)
+            eff_int_time[image == 0] = [0]
         padded_frame = embed_image(image, framesize=pad_fraction)
         shifted_frame = rotate_shift_image(padded_frame, 0, dxs[i], dys[i])
         dither_frames.append(shifted_frame)
+        eff_int_time_frames.append(eff_int_time)
+        ideal_int_time_frames.append(ideal_int_time)
         if save_shifts:
             shifted_file=output_dir + target_info + 'HPMasked_Shifted%i.npy' % i
             np.save(shifted_file, shifted_frame)
             dither_frame_list.append(shifted_file)
 
-    if combination_mode=='median':
+    if divide_by_int_time:
+        eff_int_time_frame = median_stack(np.array(eff_int_time_frames))
+        ideal_int_time_frame = median_stack(np.array(ideal_int_time_frames))
         final_image = median_stack(np.array(dither_frames))
         outfile = output_dir + target_info + '_medianstacked_exptimeNORM'
+        outfilestack = output_dir + target_info + '_stack_exptimeNORM'
 
-    if combination_mode=='mean':
-        final_image = median_stack(np.array(dither_frames))
-        outfile = output_dir + target_info + '_meanstacked_exptimeNORM'
-
-    outfilestack = output_dir + target_info + '_stack_exptimeNORM'
+    else:
+        eff_int_time_frame = np.sum(np.array(eff_int_time_frames), axis=0)
+        ideal_int_time_frame = np.sum(np.array(ideal_int_time_frames), axis=0)
+        int_time_ratio = eff_int_time_frame / ideal_int_time_frame
+        final_image=np.sum(np.array(dither_frames), axis=0)
+        outfile = output_dir + target_info + '_stacked'
+        outfilestack = output_dir + target_info + '_stack'
+        outfileinttimeratio = output_dir + target_info + '_intTimeRatio'
+        np.save(outfileinttimeratio, int_time_ratio)
 
     if hpm_again:
         final_image=quick_hpm(final_image, outfile, save=False)
         outfile=outfile+'_HPMAgain'
     pa(final_image)
+    outfile_effinttime=output_dir + target_info + '_effIntTime'
+    outfile_idealinttime=output_dir + target_info + '_idealIntTime'
     np.save(outfile, final_image)
     np.save(outfilestack, dither_frames)
+
+    np.save(outfile_effinttime, eff_int_time_frame)
+    np.save(outfile_idealinttime, ideal_int_time_frame)
 
 
 def quick_hpm(image, outfilename, save=True):
@@ -118,20 +143,6 @@ def quick_hpm(image, outfilename, save=True):
         pa(reHPM['image'])
     else:
         return reHPM['image']
-
-def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):
-    dither_frames=np.load(ditherframe_file)
-    PSF=np.load(PSF_file)
-    for i in range(npos):
-        dither_frames[i,:,:]=dither_frames[i,:,:]-PSF
-    if combination_mode=='median':
-        outfilesub = target_info+ '_medianstacked_PSFSub'
-        PSF_sub=median_stack(dither_frames)
-    if combination_mode=='mean':
-        outfilesub = target_info + '_meanstacked_PSFSub'
-        PSF_sub = mean_stack(dither_frames)
-    np.save(outfilesub, PSF_sub)
-    pa(PSF_sub)
 
 def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=False, ND_filter_bool=True,
                    sat_spotcorr=5.5, ND_filtercorr=1):
@@ -207,7 +218,7 @@ def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242,
 
 
 def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
-                       badpix_bool=False, normalize=1, plot_bool=False, fwhm_est=8, nlod=12, **fluxestkwargs):
+                       badpix_bool=False, normalize=1, fwhm_est=8, nlod=12, **fluxestkwargs):
     if unocculted:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
