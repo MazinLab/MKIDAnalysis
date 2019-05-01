@@ -5,15 +5,17 @@ from mkidpipeline import badpix as bp
 from mkidpipeline.hdf.photontable import ObsFile as obs
 from mkidpipeline.utils.plottingTools import plot_array as pa
 from scipy.optimize import curve_fit
+from mkidcore.instruments import CONEX2PIXEL
 
 from scipy.ndimage.filters import median_filter
 import matplotlib.pyplot as plt
 
 from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, centroid_com, CircularAperture, aperture_photometry
-from analysis_utils import *
+from astropy.modeling.models import AiryDisk2D
+from MKIDAnalysis.analysis_utils import *
 
 
-def align_stack_image(output_dir, target_info, int_time, xcon, ycon, divide_by_int_time=True, make_numpy=True, save_shifts=True, hpm_again=True):
+def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
     """
     output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
     target_info='51EriDither3'
@@ -23,7 +25,6 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, divide_by_i
     """
 
     obsfile_list = glob.glob(output_dir + '15*.h5')
-
     npos = len(obsfile_list)
     wvlStart = 900  # True for parasiting
     wvlStop = 1140
@@ -51,28 +52,17 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, divide_by_i
         for i in range(npos):
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
             numpyfxnlist.append(outfile)
+        print(numpyfxnlist)
 
     rough_shiftsx = []
     rough_shiftsy = []
     centroidsx = []
     centroidsy = []
 
-    pad_fraction = .8
+    pad_fraction = 0.8
 
-    xopt, xcov = curve_fit(linear_func, np.array([-0.035, 0.23, 0.495]), np.array([125.12754088, 106.53992258, 92.55050812]), sigma=np.array([0.33597449, 0.82476065, 1.6125932 ]))
-    yopt, ycov = curve_fit(linear_func, np.array([-0.76, -0.38, 0., 0.38]), np.array([36.53739721, 61.29792346, 90.77367552, 115.0451042 ]), sigma=np.array([1., 0.13307094, 1.26640359, 0.38438538]))
-
-    xpos = np.array(xcon) * xopt[0] + xopt[1]
-    ypos = np.array(ycon) * yopt[0] + yopt[1]
-
-    # starting point centroid guess for first frame is where all subsequent frames will be aligned to
-    refpointx = xpos[0]
-    refpointy = ypos[0]
-    print('xpos', xpos[0], 'ypos', ypos[0])
-
-    # determine the coarse x and y shifts that subsequent frames must be moved to align with first frame
-    dxs = (np.zeros(len(xpos)) + refpointx) - xpos
-    dys = (np.zeros(len(ypos)) + refpointy) - ypos
+    refpointx=CONEX2PIXEL(xcon[0], ycon[0])[0]
+    refpointy=CONEX2PIXEL(xcon[0], ycon[0])[1]
 
     # load dithered science frames
     dither_frames = []
@@ -80,59 +70,70 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, divide_by_i
     ideal_int_time_frames = []
     dither_frame_list=[]
 
+
     for i in range(npos):
+        xpos = CONEX2PIXEL(xcon[i], ycon[i])[0]
+        ypos = CONEX2PIXEL(xcon[i], ycon[i])[1]
+
+        dx = refpointx - xpos
+        dy = refpointy - ypos
+
         image=np.load(numpyfxnlist[i])
         image[image == 0] = ['nan']
-        rough_shiftsx.append(dxs[i])
-        rough_shiftsy.append(dys[i])
-        centroidsx.append(refpointx - dxs[i])
-        centroidsy.append(refpointy - dys[i])
-        if divide_by_int_time:
-            image = image / int_time  # divide by eff int time
-            ideal_int_time = np.full_like(image, fill_value=1)
-            eff_int_time = np.full_like(image, fill_value=1)
+        rough_shiftsx.append(dx)
+        rough_shiftsy.append(dy)
+        centroidsx.append(refpointx - dx)
+        centroidsy.append(refpointy - dy)
+        
+        if median_combine:
+            padded_frame = embed_image(image/int_time, framesize=pad_fraction, pad_value=np.nan)
+            shifted_frame = rotate_shift_image(padded_frame, 0, dx, dy)
         else:
-            eff_int_time = np.full_like(image, fill_value=int_time)
-            ideal_int_time = np.full_like(image, fill_value=int_time)
-            eff_int_time[image == 0] = [0]
-        padded_frame = embed_image(image, framesize=pad_fraction)
-        shifted_frame = rotate_shift_image(padded_frame, 0, dxs[i], dys[i])
+            padded_frame = embed_image(image, framesize=pad_fraction, pad_value=np.nan)
+            shifted_frame = rotate_shift_image(padded_frame, 0, dx, dy)
+            eff_int_time = np.full_like(padded_frame, fill_value=int_time)
+            ideal_int_time = np.full_like(padded_frame, fill_value=int_time)
+            eff_int_time[np.isnan(shifted_frame)] = [0]
+
+            eff_int_time_frames.append(eff_int_time)
+            ideal_int_time_frames.append(ideal_int_time)
+        
         dither_frames.append(shifted_frame)
-        eff_int_time_frames.append(eff_int_time)
-        ideal_int_time_frames.append(ideal_int_time)
+
         if save_shifts:
             shifted_file=output_dir + target_info + 'HPMasked_Shifted%i.npy' % i
             np.save(shifted_file, shifted_frame)
             dither_frame_list.append(shifted_file)
 
-    if divide_by_int_time:
-        eff_int_time_frame = median_stack(np.array(eff_int_time_frames))
-        ideal_int_time_frame = median_stack(np.array(ideal_int_time_frames))
+    if median_combine:
         final_image = median_stack(np.array(dither_frames))
         outfile = output_dir + target_info + '_medianstacked_exptimeNORM'
         outfilestack = output_dir + target_info + '_stack_exptimeNORM'
 
     else:
+        final_image=np.nansum(np.array(dither_frames), axis=0)
+        outfile = output_dir + target_info + '_stacked'
+        outfilestack = output_dir + target_info + '_stack'
+
         eff_int_time_frame = np.sum(np.array(eff_int_time_frames), axis=0)
         ideal_int_time_frame = np.sum(np.array(ideal_int_time_frames), axis=0)
         int_time_ratio = eff_int_time_frame / ideal_int_time_frame
-        final_image=np.sum(np.array(dither_frames), axis=0)
-        outfile = output_dir + target_info + '_stacked'
-        outfilestack = output_dir + target_info + '_stack'
         outfileinttimeratio = output_dir + target_info + '_intTimeRatio'
         np.save(outfileinttimeratio, int_time_ratio)
+        outfile_effinttime = output_dir + target_info + '_effIntTime'
+        outfile_idealinttime = output_dir + target_info + '_idealIntTime'
+        np.save(outfile_effinttime, eff_int_time_frame)
+        np.save(outfile_idealinttime, ideal_int_time_frame)
 
     if hpm_again:
         final_image=quick_hpm(final_image, outfile, save=False)
         outfile=outfile+'_HPMAgain'
+    print(rough_shiftsx)
+    print(rough_shiftsy)
     pa(final_image)
-    outfile_effinttime=output_dir + target_info + '_effIntTime'
-    outfile_idealinttime=output_dir + target_info + '_idealIntTime'
     np.save(outfile, final_image)
     np.save(outfilestack, dither_frames)
 
-    np.save(outfile_effinttime, eff_int_time_frame)
-    np.save(outfile_idealinttime, ideal_int_time_frame)
 
 
 def quick_hpm(image, outfilename, save=True):
@@ -150,7 +151,7 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
     fig, axs = plt.subplots(1, 1)
     axs.imshow(data, origin='lower', interpolation='nearest')
 
-    fwhm_guess = 8.0
+    fwhm_guess = 2.5
     marker = '+'
     ms, mew = 30, 2.
     box_size = fwhm_guess * 5
@@ -189,6 +190,53 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
     return {'norm': norm, 'xpos': xpos, 'ypos': ypos, 'factor': factor}
 
 
+def PSF_estimator(datafilePSF, temporalfilePSF, xcentroid_PSF, ycentroid_PSF, trueFWHM=2.5):
+
+    data=np.load(datafilePSF)
+    time=np.load(temporalfilePSF)
+
+    datatemp=data/time
+    
+    fig, axs = plt.subplots(1, 1)
+    axs.imshow(datatemp, origin='lower', interpolation='nearest')
+
+    marker = '+'
+    ms, mew = 30, 2.
+
+    axs.plot(xcentroid_PSF, ycentroid_PSF, color='red', marker=marker, ms=ms, mew=mew)  # check how we did
+    plt.show()
+    
+    slicedatavert=datatemp[:, xcentroid_PSF]
+    slicedatavertnorm=slicedatavert/np.nanmax(slicedatavert)
+
+    slicedatahoriz=datatemp[ycentroid_PSF, :]
+    slicedatahoriznorm=slicedatahoriz/np.nanmax(slicedatahoriz)
+
+    a2d=AiryDisk2D(radius=trueFWHM, x_0=xcentroid_PSF, y_0=ycentroid_PSF)
+    pt=a2d(*np.mgrid[0:datatemp.shape[1], 0:datatemp.shape[0]])
+    airy=pt.T
+
+    sliceairyvert=airy[:, xcentroid_PSF]
+    sliceairyvertnorm=sliceairyvert/np.nanmax(sliceairyvert)
+
+    sliceairyhoriz=airy[ycentroid_PSF, :]
+    sliceairyhoriznorm=sliceairyhoriz/np.nanmax(sliceairyhoriz)
+
+    plt.plot(sliceairyhoriznorm)
+    plt.plot(slicedatahoriznorm)
+    plt.title('Ideal 1D Airy PSF with FWHM 1.22 lambda/D with actual PSF from a single dither (one slice)')
+    plt.ylabel('Normalized Mean Counts/60sec')
+    plt.xlabel('Pixels (horizontal)')
+    plt.show()
+
+    plt.plot(sliceairyvertnorm)
+    plt.plot(slicedatavertnorm)
+    plt.title('Ideal 1D Airy PSF with FWHM 1.22 lambda/D with actual PSF from a single dither (one slice)')
+    plt.ylabel('Normalized Mean Counts/60sec')
+    plt.xlabel('Pixels (vertical)')
+    plt.show()
+
+
 def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242, ycenter=180, box_size=100):
     data = np.load(datafile)
 
@@ -218,7 +266,7 @@ def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242,
 
 
 def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
-                       badpix_bool=False, normalize=1, fwhm_est=8, nlod=12, **fluxestkwargs):
+                       badpix_bool=False, normalize=1, fwhm_est=2.5, nlod=20, **fluxestkwargs):
     if unocculted:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
@@ -266,7 +314,7 @@ def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt
 
 
 def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
-            badpix_bool=False, calc_flux=False, normalize=1, fwhm_est=8, nlod=12, plot=False, verbose=False, **fluxestkwargs):
+            badpix_bool=False, calc_flux=False, normalize=1, fwhm_est=2.5, nlod=20, plot=False, verbose=False, **fluxestkwargs):
     if unocculted and calc_flux:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
