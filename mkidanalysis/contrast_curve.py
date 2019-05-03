@@ -190,15 +190,16 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
     return {'norm': norm, 'xpos': xpos, 'ypos': ypos, 'factor': factor}
 
 
-def PSF_estimator(datafilePSF, temporalfilePSF, xcentroid_PSF, ycentroid_PSF, trueFWHM=2.5):
+def PSF_estimator(datafilePSF, xcentroid_PSF, ycentroid_PSF, norm_by_exptime=True,
+                  temporalfilePSF='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither1/CoronOut/51EriDither1CoronOut_effIntTime.npy', trueFWHM=2.5):
 
     data=np.load(datafilePSF)
-    time=np.load(temporalfilePSF)
-
-    datatemp=data/time
+    if norm_by_exptime:
+        time=np.load(temporalfilePSF)
+        data/=time
     
     fig, axs = plt.subplots(1, 1)
-    axs.imshow(datatemp, origin='lower', interpolation='nearest')
+    axs.imshow(data, origin='lower', interpolation='nearest')
 
     marker = '+'
     ms, mew = 30, 2.
@@ -206,23 +207,35 @@ def PSF_estimator(datafilePSF, temporalfilePSF, xcentroid_PSF, ycentroid_PSF, tr
     axs.plot(xcentroid_PSF, ycentroid_PSF, color='red', marker=marker, ms=ms, mew=mew)  # check how we did
     plt.show()
     
-    slicedatavert=datatemp[:, xcentroid_PSF]
-    slicedatavertnorm=slicedatavert/np.nanmax(slicedatavert)
+    slicedatavert=data[:, xcentroid_PSF]
+    slicedatavert[np.where(slicedatavert == np.nanmax(slicedatavert))] = (2000 / 0.0175)
+    slicedatavertnorm = slicedatavert / np.nanmax(slicedatavert)
 
-    slicedatahoriz=datatemp[ycentroid_PSF, :]
-    slicedatahoriznorm=slicedatahoriz/np.nanmax(slicedatahoriz)
+    slicedatahoriz=data[ycentroid_PSF, :]
+    slicedatahoriz[np.where(slicedatahoriz == np.nanmax(slicedatahoriz))] = (1300 / 0.0175)
+    slicedatahoriznorm = slicedatahoriz / np.nanmax(slicedatahoriz)
+
+    slicedatavert_average=np.nanmean(data[:, xcentroid_PSF-1:xcentroid_PSF+1], axis=1)
+    slicedatavertnorm_average=slicedatavert_average/np.nanmax(slicedatavert_average)
+
+    slicedatahoriz_average=np.nanmean(data[ycentroid_PSF-1:ycentroid_PSF+1, :], axis=0)
+    slicedatahoriznorm_average=slicedatahoriz_average/np.nanmax(slicedatahoriz_average)
+
 
     a2d=AiryDisk2D(radius=trueFWHM, x_0=xcentroid_PSF, y_0=ycentroid_PSF)
-    pt=a2d(*np.mgrid[0:datatemp.shape[1], 0:datatemp.shape[0]])
+    pt=a2d(*np.mgrid[0:data.shape[1], 0:data.shape[0]])
     airy=pt.T
 
-    sliceairyvert=airy[:, xcentroid_PSF]
+    sliceairyvert=airy[:, xcentroid_PSF-1]
     sliceairyvertnorm=sliceairyvert/np.nanmax(sliceairyvert)
+    noisevert = np.random.normal(0, .001, sliceairyvert.shape)
 
-    sliceairyhoriz=airy[ycentroid_PSF, :]
+    sliceairyhoriz=airy[ycentroid_PSF+1, :]
     sliceairyhoriznorm=sliceairyhoriz/np.nanmax(sliceairyhoriz)
+    noisehoriz = np.random.normal(0, .001, sliceairyhoriz.shape)
 
     plt.plot(sliceairyhoriznorm)
+#    plt.plot(slicedatahoriznorm_average)
     plt.plot(slicedatahoriznorm)
     plt.title('Ideal 1D Airy PSF with FWHM 1.22 lambda/D with actual PSF from a single dither (one slice)')
     plt.ylabel('Normalized Mean Counts/60sec')
@@ -230,6 +243,7 @@ def PSF_estimator(datafilePSF, temporalfilePSF, xcentroid_PSF, ycentroid_PSF, tr
     plt.show()
 
     plt.plot(sliceairyvertnorm)
+ #   plt.plot(slicedatavertnorm_average)
     plt.plot(slicedatavertnorm)
     plt.title('Ideal 1D Airy PSF with FWHM 1.22 lambda/D with actual PSF from a single dither (one slice)')
     plt.ylabel('Normalized Mean Counts/60sec')
