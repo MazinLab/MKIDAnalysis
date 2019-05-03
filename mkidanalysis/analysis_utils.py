@@ -2,6 +2,8 @@ import numpy as np
 from scipy import ndimage
 from mkidcore.instruments import CONEX2PIXEL
 from scipy.interpolate import griddata
+from mkidpipeline.utils.plottingTools import plot_array as pa
+import os
 
 
 def ditherp_2_pixel(positions):
@@ -10,6 +12,23 @@ def ditherp_2_pixel(positions):
     pix = np.asarray(CONEX2PIXEL(positions[:, 0], positions[:, 1])) - np.array(CONEX2PIXEL(0, 0)).reshape(2, 1)
     return pix
 
+def load_img(image_path):
+
+    image = np.fromfile(open(image_path, mode='rb'), dtype=np.uint16)
+    image = np.transpose(np.reshape(image, (140, 146)))
+    image=np.array(image)
+    return(image)
+
+def load_img_stack(data_dir, start, stop):
+    frameTimes = np.arange(start, stop + 1)
+    frames = []
+    for iTs, ts in enumerate(frameTimes):
+        image_path = os.path.join(data_dir, str(ts) + '.img')
+        image = np.fromfile(open(image_path, mode='rb'), dtype=np.uint16)
+        image = np.transpose(np.reshape(image, (140, 146)))
+        frames.append(image)
+    stack = np.array(frames)
+    return stack
 
 def linear_func(x, slope, intercept):
     return x * slope + intercept
