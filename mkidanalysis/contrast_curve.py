@@ -5,6 +5,7 @@ from mkidpipeline import badpix as bp
 from mkidpipeline.hdf.photontable import ObsFile as obs
 from mkidpipeline.utils.plottingTools import plot_array as pa
 from scipy.optimize import curve_fit
+import mkidcore.pixelflags as pixelflags
 from mkidcore.instruments import CONEX2PIXEL
 
 from scipy.ndimage.filters import median_filter
@@ -26,8 +27,8 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
 
     obsfile_list = glob.glob(output_dir + '15*.h5')
     npos = len(obsfile_list)
-    wvlStart = 900  # True for parasiting
-    wvlStop = 1140
+    wvlStart = 850  # True for parasiting
+    wvlStop = 1100
 
     numpyfxnlist = []
 
@@ -53,6 +54,30 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
             numpyfxnlist.append(outfile)
         print(numpyfxnlist)
+#
+#    if make_numpy:
+#        for i in range(npos):
+#            obsfile = obs(obsfile_list[i], mode='write')
+#            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
+#                                             wvlStart=wvlStart, wvlStop=wvlStop)
+#            print(
+#            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
+#            'to ', wvlStop)
+#            saveim = np.transpose(img['image'])
+#
+#            usable_mask = np.array(obsfile.beamFlagImage) == pixelflags.GOODPIXEL
+#            usable_mask=usable_mask.T
+#            image=saveim*usable_mask
+#            outfile = output_dir + target_info + 'HPMasked%i.npy' % i
+#            pa(saveim-image)
+#            np.save(outfile, image)
+#            numpyfxnlist.append(outfile)
+#            obsfile.file.close()
+#    else:
+#        for i in range(npos):
+#            outfile = output_dir + target_info + 'HPMasked%i.npy' % i
+#            numpyfxnlist.append(outfile)
+#        print(numpyfxnlist)
 
     rough_shiftsx = []
     rough_shiftsy = []
@@ -128,8 +153,6 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
     if hpm_again:
         final_image=quick_hpm(final_image, outfile, save=False)
         outfile=outfile+'_HPMAgain'
-    print(rough_shiftsx)
-    print(rough_shiftsy)
     pa(final_image)
     np.save(outfile, final_image)
     np.save(outfilestack, dither_frames)
@@ -280,7 +303,7 @@ def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242,
 
 
 def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
-                       badpix_bool=False, normalize=1, fwhm_est=2.5, nlod=20, **fluxestkwargs):
+                              normalize=1, fwhm_est=2.5, nlod=20, **fluxestkwargs):
     if unocculted:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
@@ -328,7 +351,7 @@ def make_CoronagraphicProfile(datafileCC, unocculted=False, unoccultedfile='/mnt
 
 
 def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/microcastle/51Eri/51EriProc/51EriUnocculted.npy',
-            badpix_bool=False, calc_flux=False, normalize=1, fwhm_est=2.5, nlod=20, plot=False, verbose=False, **fluxestkwargs):
+            calc_flux=False, normalize=1, fwhm_est=2.5, nlod=20, plot=False, verbose=False, **fluxestkwargs):
     if unocculted and calc_flux:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
