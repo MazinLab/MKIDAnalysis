@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
@@ -7,13 +8,11 @@ from scipy.ndimage import rotate, zoom
 import argparse
 # from vip_hci import pca
 from mkidpipeline.imaging.drizzler import form
+import mkidpipeline
+import mkidcore.corelog as pipelinelog
 from mkidpipeline.imaging.drizzler import DrizzledData as DD
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
-import mkidcore.corelog as pipelinelog
-
-
-from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, centroid_com, CircularAperture, aperture_photometry
 from MKIDAnalysis.analysis_utils import *
 
 
@@ -31,20 +30,6 @@ def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, co
     np.save(outfilesub, PSF_sub)
     pa(PSF_sub)
 
-# TODO move this functionality to an analysis/postprocessing package rather than an example?
-
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
-import matplotlib
-from astropy.io import fits
-from scipy.ndimage import rotate, zoom
-import argparse
-# from vip_hci import pca
-from mkidpipeline.imaging.drizzler import form
-import mkidpipeline
-import mkidcore.corelog as pipelinelog
 
 def rot_array(img, pivot,angle):
     padX = [img.shape[1] - pivot[0], pivot[0]]
@@ -57,7 +42,8 @@ def rot_array(img, pivot,angle):
 def clipped_zoom(img, zoom_factor, **kwargs):
     """ Courtesy of
     https://stackoverflow.com/questions/37119071/scipy-rotate-and-zoom-an-image-without-changing-its-dimensions """
-
+    img=nans_to_zeros(img)
+    img[img==np.inf]=0
     h, w = img.shape[:2]
     # For multichannel images we don't want to apply the zoom factor to the RGB
     # dimension, so instead we create a tuple of zoom factors, one per array
@@ -160,13 +146,11 @@ def ADI():
     plt.show()
 
 
-def SDI():
+def SDI(plot_diagnostics=False, integration_time=60, number_time_bins=10):
     """
-
     Median collapse a tesseract along the time dimension to produce a spectral cube with minimal hot pixels. Then
     radially scale the channels and median collapse to produce the reference PSF. Scale and bubtract that PSF from the
     spectral cube and median collpase to form an image. Needs to be verified
-
     """
 
     parser = argparse.ArgumentParser(description='Photon Drizzling Utility')
@@ -174,7 +158,7 @@ def SDI():
     args = parser.parse_args()
     cfg = mkidpipeline.config.load_task_config(args.cfg)
 
-    fitsname = 'SDI'
+    fitsname = 'spec_cube'
 
     nwvlbins = 5
     wvlMin = 850
@@ -182,48 +166,71 @@ def SDI():
     wsamples = np.linspace(wvlMin, wvlMax, nwvlbins + 1)
     scale_list = wsamples[::-1] * 2. / (wvlMax + wvlMin)
 
-    fullfitsname = fitsname+'fits'
+    fullfitsname = fitsname+'.fits'
     if os.path.exists(fullfitsname):
         hdul = fits.open(fullfitsname)
-        tess = hdul[1].data
+        spec_cube = hdul[0].data
     else:
         drizzle = form(cfg.dither, mode='temporal', rotation_center=cfg.drizzler.rotation_center,
-                       pixfrac=cfg.drizzler.pixfrac, target_radec=cfg.drizzler.target_radec, wvlMin=wvlMin,
-                       wvlMax=wvlMax, intt=2, device_orientation=cfg.drizzler.device_orientation, nwvlbins=nwvlbins,
-                       derotate=True, fitsname=fitsname)
+                       pixfrac=cfg.drizzler.pixfrac, wvlMin=wvlMin,
+                       wvlMax=wvlMax, intt=integration_time, ntimebins=number_time_bins, device_orientation=cfg.drizzler.device_orientation, nwvlbins=nwvlbins,
+                       derotate=True)
 
         tess = drizzle.data
+        spec_cube = np.sum(tess, axis=0) / drizzle.image_weights
+        fits.writeto(fullfitsname, spec_cube, overwrite=True)
 
-    spec_cube = tess[0]
-
-    # # Inspect the spectral cube
-    for i in range(nwvlbins):
-        plt.figure()
-        plt.imshow(spec_cube[i])
-        if i == nwvlbins - 1:
-            plt.show()
-
-
-    raise NotImplementedError
-    fits.writeto(cfg.dither.name + '_med.fits', medDither, drizwcs.to_header(), overwrite=True)
+    if plot_diagnostics:
+        # Inspect the spectral cube
+        for i in range(nwvlbins):
+            plt.figure()
+            plt.imshow(spec_cube[i])
+            if i == nwvlbins - 1:
+                plt.show(block=True)
 
     # Using PCA doesn't appear to work well
-    # SDI = pca.pca(medDither, angle_list=np.zeros((medDither.shape[0])), scale_list=scale_list)
+    # SDI = pca.pca(spec_cube, angle_list=np.zeros((spec_cube.shape[0])), scale_list=scale_list)
 
     # Do it manually
-    scale_cube = np.zeros_like(medDither)
+
+    # stretch the spec_cube so the speckles line up and the planet moves radially
+    scale_cube = np.zeros_like(spec_cube)
+
     for i in range(nwvlbins):
-        scale_cube[i] = clipped_zoom(medDither[i], scale_list[i])
-        show = True if i == nwvlbins - 1 else False
-        pretty_plot(scale_cube[i], drizwcs.wcs.cdelt[0], drizwcs.wcs.crval, vmin=1, vmax=10, show=show)
+        scale_cube[i] = clipped_zoom(spec_cube[i], scale_list[i])
 
+    if plot_diagnostics:
+        for i in range(nwvlbins):
+            plt.figure()
+            plt.imshow(scale_cube[i])
+            if i == nwvlbins - 1:
+                plt.show(block=True)
+
+    # median collapse to create the static speckle reference
     ref = np.median(scale_cube, axis=0)
-    SDI = medDither - ref
+    plt.imshow(ref)
+    plt.show(block=True)
 
-    pretty_plot(SDI, drizwcs.wcs.cdelt[0], drizwcs.wcs.crval, vmin=1, vmax=10)
+    # scale that so the ref image matches the static speckles at each wavelength and the planet doesn't move
+    ref_cube = np.zeros_like(spec_cube)
+    for i in range(nwvlbins):
+        ref_cube[i] = clipped_zoom(ref, scale_list[-i])
 
-    fits.writeto(cfg.dither.name + '_SDI.fits', SDI, drizwcs.to_header(), overwrite=True)
+    if plot_diagnostics:
+        for i in range(nwvlbins):
+            ref_cube[i] = clipped_zoom(ref, scale_list[-i])
+            plt.figure()
+            plt.imshow(ref_cube[i])
+            if i == nwvlbins - 1:
+                plt.show(block=True)
+
+    # perform the subtraction and mean collapse to build S/N of planet
+    SDI=np.nanmean(spec_cube - ref_cube, axis=0)
+
+    plt.imshow(SDI)
+    np.save('./SDI',SDI)
+    plt.show()
 
 
 if __name__ == '__main__':
-    SDI()
+    SDI(plot_diagnostics=True)
