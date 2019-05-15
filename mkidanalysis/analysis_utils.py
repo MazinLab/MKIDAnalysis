@@ -2,7 +2,6 @@ import numpy as np
 from scipy import ndimage
 from mkidcore.instruments import CONEX2PIXEL
 from scipy.interpolate import griddata
-from mkidpipeline.utils.plottingTools import plot_array as pa
 import os
 
 
@@ -56,6 +55,11 @@ def negatives_to_nans(image):
     image[image < 0] = np.nan
     return image
 
+def nans_to_zeros(image):
+    image = image.astype(float)
+    image[np.isnan(image)] = 0
+    image[image==np.inf] = 0
+    return image
 
 def dist(yc, xc, y1, x1):
     """
