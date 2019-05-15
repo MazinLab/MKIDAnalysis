@@ -40,44 +40,28 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
             print(
             'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
             'to ', wvlStop)
-            obsfile.file.close()
             saveim = np.transpose(img['image'])
+            usable_mask = np.array(obsfile.beamFlagImage) == pixelflags.GOODPIXEL
+            usable_mask=usable_mask.T
+            saveim*=usable_mask
 
-            print('applying HPM to ', i)
-            dead_mask = saveim == 0
-            fluxbox = bp.hpm_flux_threshold(saveim, fwhm=4, dead_mask=dead_mask)
+            obsfile.file.close()
+
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
-            np.save(outfile, fluxbox['image'])
+
+            if hpm_again:
+                print('applying HPM to ', i)
+                saveimHP=quickHPM(saveim, outfile, save=False)
+                np.save(outfile, saveimHP)
+            else:
+                np.save(outfile, saveim)
+
             numpyfxnlist.append(outfile)
     else:
         for i in range(npos):
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
             numpyfxnlist.append(outfile)
         print(numpyfxnlist)
-#
-#    if make_numpy:
-#        for i in range(npos):
-#            obsfile = obs(obsfile_list[i], mode='write')
-#            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
-#                                             wvlStart=wvlStart, wvlStop=wvlStop)
-#            print(
-#            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
-#            'to ', wvlStop)
-#            saveim = np.transpose(img['image'])
-#
-#            usable_mask = np.array(obsfile.beamFlagImage) == pixelflags.GOODPIXEL
-#            usable_mask=usable_mask.T
-#            image=saveim*usable_mask
-#            outfile = output_dir + target_info + 'HPMasked%i.npy' % i
-#            pa(saveim-image)
-#            np.save(outfile, image)
-#            numpyfxnlist.append(outfile)
-#            obsfile.file.close()
-#    else:
-#        for i in range(npos):
-#            outfile = output_dir + target_info + 'HPMasked%i.npy' % i
-#            numpyfxnlist.append(outfile)
-#        print(numpyfxnlist)
 
     rough_shiftsx = []
     rough_shiftsy = []
