@@ -61,6 +61,11 @@ def nans_to_zeros(image):
     image[image==np.inf] = 0
     return image
 
+def zeros_to_nans(image):
+    image = image.astype(float)
+    image[image==0] = np.nan
+    return image
+
 def dist(yc, xc, y1, x1):
     """
     Return the Euclidean distance between two points.
