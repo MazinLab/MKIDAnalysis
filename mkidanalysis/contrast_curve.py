@@ -35,15 +35,17 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
     if make_numpy:
         for i in range(npos):
             obsfile = obs(obsfile_list[i], mode='write')
-            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
-                                             wvlStart=wvlStart, wvlStop=wvlStop)
-            print(
-            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
-            'to ', wvlStop)
+#            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
+#                                             wvlStart=wvlStart, wvlStop=wvlStop)
+#            print(
+#            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
+#            'to ', wvlStop)
+            img = obsfile.getPixelCountImage(wvlStart=wvlStart, wvlStop=wvlStop)
+            print('GOTIMAGE', i)
             saveim = np.transpose(img['image'])
-            usable_mask = np.array(obsfile.beamFlagImage) == pixelflags.GOODPIXEL
-            usable_mask=usable_mask.T
-            saveim*=usable_mask
+#            usable_mask = np.array(obsfile.beamFlagImage) == pixelflags.GOODPIXEL
+#            usable_mask=usable_mask.T
+#            saveim*=usable_mask
 
             obsfile.file.close()
 
@@ -51,7 +53,8 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
 
             if hpm_again:
                 print('applying HPM to ', i)
-                saveimHP=quickHPM(saveim, outfile, save=False)
+                saveim=zeros_to_nans(saveim)
+                saveimHP=quick_hpm(saveim, outfile, save=False)
                 np.save(outfile, saveimHP)
             else:
                 np.save(outfile, saveim)
@@ -153,15 +156,14 @@ def quick_hpm(image, outfilename, save=True):
         return reHPM['image']
 
 def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=False, ND_filter_bool=True,
-                   sat_spotcorr=5.5, ND_filtercorr=1):
+                   sat_spotcorr=5.5, ND_filtercorr=1, fwhm_est=2.5):
     data = np.load(datafileFLUX)
     fig, axs = plt.subplots(1, 1)
     axs.imshow(data, origin='lower', interpolation='nearest')
 
-    fwhm_guess = 2.5
     marker = '+'
     ms, mew = 30, 2.
-    box_size = fwhm_guess * 5
+    box_size = fwhm_est * 5
 
     mask = np.isnan(data)
 
@@ -176,7 +178,7 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
     ypos = positions[1]
 
     positions_ap = [(xpos[0], ypos[0])]
-    apertures = CircularAperture(positions_ap, r=8.)
+    apertures = CircularAperture(positions_ap, r=fwhm_est)
     phot_table = aperture_photometry(data, apertures, mask=mask)
 
     fig, axs = plt.subplots(1, 1)
@@ -500,7 +502,7 @@ def make_CC(datafileCC, unocculted=False, unoccultedfile='/mnt/data0/isabel/micr
     ax1.set_ylabel(r'Normalized by Unocculted PSF Intensity', fontsize=14)
     ax1.set_xlim(0, nlod)
 
-    ax1.set_ylim(2e-5, 1)
+    ax1.set_ylim(2e-6, 1)
     ax1.set_yscale('log')
     ax1.legend()
     plt.show()
