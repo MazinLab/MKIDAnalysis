@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.pylab as plt
 from matplotlib.colors import LogNorm
 import matplotlib
 from astropy.io import fits
@@ -14,6 +15,12 @@ from mkidpipeline.imaging.drizzler import DrizzledData as DD
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
 from MKIDAnalysis.analysis_utils import *
+from astropy.coordinates import EarthLocation, SkyCoord
+import astropy.units as u
+from astroplan import Observer
+import astropy
+import datetime
+import matplotlib.dates as mdates
 
 
 def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):
@@ -146,7 +153,7 @@ def ADI():
     plt.show()
 
 
-def SDI(plot_diagnostics=False, integration_time=60, number_time_bins=10):
+def SDI(plot_diagnostics=False, integration_time=100, number_time_bins=10):
     """
     Median collapse a tesseract along the time dimension to produce a spectral cube with minimal hot pixels. Then
     radially scale the channels and median collapse to produce the reference PSF. Scale and bubtract that PSF from the
@@ -230,6 +237,54 @@ def SDI(plot_diagnostics=False, integration_time=60, number_time_bins=10):
     plt.imshow(SDI)
     np.save('./SDI',SDI)
     plt.show()
+
+def ADI_check():
+    myFmt = mdates.DateFormatter('%d')
+
+    targets = ['HD 984']
+    rows = 1
+    cols = 1
+    year, month, day = 2018, 12, 21
+    observatory = 'subaru'
+
+    st = datetime.datetime(year=year, month=month, day=day, hour=5, tzinfo=datetime.timezone.utc)  # sunset is 7 pm Hawaii time + 10 hours
+    et = datetime.datetime(year=year, month=month, day=day, hour=16, tzinfo=datetime.timezone.utc)  # sunrise is 6 am Hawaii time + 10 hours
+
+    uts = np.int_([st.timestamp(), et.timestamp()])
+    apo = Observer.at_site(observatory)
+    times = range(uts[0], uts[1], 60)
+    site = EarthLocation.of_site(observatory)
+
+    fig, axes = plt.subplots(rows, cols)
+    fig.autofmt_xdate()
+    dtobs = [datetime.datetime.fromtimestamp(time) for time in times]
+
+    t = 0
+    for r in range(rows):
+        for c in range(cols):
+            print(r,c,t,targets[t],)
+            target = targets[t]
+            t+=1
+
+            coords = SkyCoord.from_name(target)
+            altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
+            earthrate = 360 / u.sday.to(u.second)
+
+            parallactic_angles = apo.parallactic_angle(times, target).value
+
+            lat = site.geodetic.lat.rad
+            az = altaz.az.radian
+            alt = altaz.alt.radian
+
+            rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
+            axes[r, c].plot(dtobs, rot_rates)
+            axes[r, c].plot(dtobs, parallactic_angles)
+            axes[r, c].set_title(target)
+
+            if c == 0:
+                axes[r, c].set_ylabel('rot rate (deg/s)')
+
+    plt.show(block=True)
 
 
 if __name__ == '__main__':
