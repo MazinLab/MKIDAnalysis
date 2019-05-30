@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.pylab as plt
 from matplotlib.colors import LogNorm
 import matplotlib
@@ -8,10 +7,7 @@ from astropy.io import fits
 from scipy.ndimage import rotate, zoom
 import argparse
 # from vip_hci import pca
-from mkidpipeline.imaging.drizzler import form
-import mkidpipeline
-import mkidcore.corelog as pipelinelog
-from mkidpipeline.imaging.drizzler import DrizzledData as DD
+from mkidpipeline.imaging.drizzler import form, DitherDescription
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
 from MKIDAnalysis.analysis_utils import *
@@ -105,39 +101,43 @@ def ADI():
     :return:
     """
 
-    obsdir = 'Singles/KappaAnd_dither+lasercal/wavecal_files'
-    ditherlog = 'KAnd_1545626974_dither.log'
-    target = '* Kap And'
+    yml = '/mnt/data0/dodkins/src/mkidpipeline/mkidpipeline/imaging/KAnd_drizzler.yml'
 
     wvlMin = 850
     wvlMax = 1100
     startt = 0
     intt = 100#60
     pixfrac = .5
+    cfg = mkidpipeline.config.load_task_config(yml)
+
+    dither = cfg.dither
 
     # get static psf of virtual grid
-    tess, drizwcs = form(4, rotate=0, target=target, ditherlog=ditherlog, obsdir=obsdir, wvlMin=wvlMin,
-                         wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac, driz_sci=True)
+    scidata = form(dither, mode='cube', wvlMin=wvlMin,
+                   wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac,
+                   derotate=False, fitsname=None)
+
+    tess = scidata.data
+
+
     y = np.ma.masked_where(tess[:, 0] == 0, tess[:, 0])
     static_map = np.ma.median(y, axis=0).filled(0)
 
-    pretty_plot(static_map, drizwcs.wcs.cdelt[0], drizwcs.wcs.crval, vmin=0, vmax=1000)
-    write_fits(static_map, target+'_rot.fits')
-
-    datadir = '/mnt/data0/isabel/mec/'
-    ditherdesc = get_ditherdesc(target, datadir, ditherlog, rotate=1)
+    ditherdesc = DitherDescription(dither, target=dither.name)
 
     # derotate the static psf for each dither time
     derot_static = np.zeros((len(ditherdesc.description.obs), static_map.shape[0], static_map.shape[1]))
     for ia, ha in enumerate(ditherdesc.dithHAs):
         # TODO use wcs and drizzle instead of rot_array
-        starxy = drizwcs.all_world2pix([[ditherdesc.cenRA, ditherdesc.cenDec]], 1)[0].astype(np.int)
+        starxy = scidata.wcs.all_world2pix([[ditherdesc.cenRA, ditherdesc.cenDec]], 1)[0].astype(np.int)
         derot_static[ia] = rot_array(static_map, starxy, -np.rad2deg(ha))
 
     # create derotated time cube
-    tess, drizwcs = form(4, rotate=1, target=target, ditherlog=ditherlog, obsdir=obsdir, wvlMin=wvlMin,
-                         wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac, driz_sci=True)
+    scidata = form(dither, mode='cube', wvlMin=wvlMin,
+                   wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac,
+                   derotate=True, fitsname=None)
 
+    tess = scidata.data
     tcube = tess[:,0]
     for i, image in enumerate(tcube):
         # shrink the reference psf to the relevant area
@@ -148,7 +148,6 @@ def ADI():
 
     # sum collapse the differential
     diff = np.sum(tcube, axis=0)
-    pretty_plot(diff, drizwcs.wcs.cdelt[0], drizwcs.wcs.crval, vmin=100, vmax=1000)
     plt.imshow(diff, origin='lower')
     plt.show()
 
@@ -288,4 +287,5 @@ def ADI_check():
 
 
 if __name__ == '__main__':
-    SDI(plot_diagnostics=True)
+    # SDI(plot_diagnostics=True)
+    ADI()
