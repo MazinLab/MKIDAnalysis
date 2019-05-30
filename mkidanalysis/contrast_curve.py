@@ -35,18 +35,12 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
     if make_numpy:
         for i in range(npos):
             obsfile = obs(obsfile_list[i], mode='write')
-#            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
-#                                             wvlStart=wvlStart, wvlStop=wvlStop)
-#            print(
-#            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
-#            'to ', wvlStop)
-            img = obsfile.getPixelCountImage(wvlStart=wvlStart, wvlStop=wvlStop)
-            print('GOTIMAGE', i)
-            saveim = np.transpose(img['image'])
-#            usable_mask = np.array(obsfile.beamFlagImage) == pixelflags.GOODPIXEL
-#            usable_mask=usable_mask.T
-#            saveim*=usable_mask
-
+            img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
+                                             wvlStart=wvlStart, wvlStop=wvlStop)
+            print(
+            'Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ', wvlStart,
+            'to ', wvlStop)
+            saveim=img['image'].T
             obsfile.file.close()
 
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
@@ -64,7 +58,6 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
         for i in range(npos):
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
             numpyfxnlist.append(outfile)
-        print(numpyfxnlist)
 
     rough_shiftsx = []
     rough_shiftsy = []
@@ -137,9 +130,9 @@ def align_stack_image(output_dir, target_info, int_time, xcon, ycon, median_comb
         np.save(outfile_effinttime, eff_int_time_frame)
         np.save(outfile_idealinttime, ideal_int_time_frame)
 
-    if hpm_again:
-        final_image=quick_hpm(final_image, outfile, save=False)
-        outfile=outfile+'_HPMAgain'
+    #if hpm_again:
+    #    final_image=quick_hpm(final_image, outfile, save=False)
+    #    outfile=outfile+'_HPMAgain'
     pa(final_image)
     np.save(outfile, final_image)
     np.save(outfilestack, dither_frames)
