@@ -82,7 +82,64 @@ def clipped_zoom(img, zoom_factor, **kwargs):
         out = img
     return out
 
+def ADI():
+    """
+    This function needs to be updated!!!
+    First median collapsing a time cube of all the raw dither images to a get a static PSF of the virtual grid. For
+    each dither derotate the static PSF and isolate the relevant area. Subtract that static reference from the
+    median of the derorated dither
+    :return:
+    """
 
+    yml = '/mnt/data0/dodkins/src/mkidpipeline/mkidpipeline/imaging/KAnd_drizzler.yml'
+
+    wvlMin = 850
+    wvlMax = 1100
+    startt = 0
+    intt = 100#60
+    pixfrac = .5
+    cfg = mkidpipeline.config.load_task_config(yml)
+
+    dither = cfg.dither
+
+    # get static psf of virtual grid
+    scidata = form(dither, mode='cube', wvlMin=wvlMin,
+                   wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac,
+                   derotate=False, fitsname=None)
+
+    tess = scidata.data
+
+
+    y = np.ma.masked_where(tess[:, 0] == 0, tess[:, 0])
+    static_map = np.ma.median(y, axis=0).filled(0)
+
+    ditherdesc = DitherDescription(dither, target=dither.name)
+
+    # derotate the static psf for each dither time
+    derot_static = np.zeros((len(ditherdesc.description.obs), static_map.shape[0], static_map.shape[1]))
+    for ia, ha in enumerate(ditherdesc.dithHAs):
+        # TODO use wcs and drizzle instead of rot_array
+        starxy = scidata.wcs.all_world2pix([[ditherdesc.cenRA, ditherdesc.cenDec]], 1)[0].astype(np.int)
+        derot_static[ia] = rot_array(static_map, starxy, -np.rad2deg(ha))
+
+    # create derotated time cube
+    scidata = form(dither, mode='cube', wvlMin=wvlMin,
+                   wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac,
+                   derotate=True, fitsname=None)
+
+    tess = scidata.data
+    tcube = tess[:,0]
+    for i, image in enumerate(tcube):
+        # shrink the reference psf to the relevant area
+        derot_static[i][image == 0] = 0
+
+        #subtract the reference
+        image -= derot_static[i]
+
+    # sum collapse the differential
+    diff = np.sum(tcube, axis=0)
+    plt.imshow(diff, origin='lower')
+    plt.show()
 
 def SDI(plot_diagnostics=False, integration_time=100, number_time_bins=10):
     """
@@ -200,11 +257,6 @@ def ADI_check(target='HD 984', year=2018, month=12, day=21, observatory='subaru'
     axs[1].plot(dtobs, parallactic_angles)
     axs[1].set_ylabel('Parallactic Angles')
     axs[1].set_title(target)
-    plt.show()
-
-
-
-
     plt.show()
 
 
