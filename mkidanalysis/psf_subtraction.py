@@ -1,17 +1,8 @@
-import os
-import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.pylab as plt
-from matplotlib.colors import LogNorm
-import matplotlib
 from astropy.io import fits
 from scipy.ndimage import rotate, zoom
 import argparse
-# from vip_hci import pca
 from mkidpipeline.imaging.drizzler import form
-import mkidpipeline
-import mkidcore.corelog as pipelinelog
-from mkidpipeline.imaging.drizzler import DrizzledData as DD
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
 from MKIDAnalysis.analysis_utils import *
@@ -20,7 +11,6 @@ import astropy.units as u
 from astroplan import Observer
 import astropy
 import datetime
-import matplotlib.dates as mdates
 
 
 def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):
@@ -92,65 +82,6 @@ def clipped_zoom(img, zoom_factor, **kwargs):
         out = img
     return out
 
-
-def ADI():
-    """
-
-    This function needs to be updated!!!
-
-    First median collapsing a time cube of all the raw dither images to a get a static PSF of the virtual grid. For
-    each dither derotate the static PSF and isolate the relevant area. Subtract that static reference from the
-    median of the derorated dither
-
-    :return:
-    """
-
-    obsdir = 'Singles/KappaAnd_dither+lasercal/wavecal_files'
-    ditherlog = 'KAnd_1545626974_dither.log'
-    target = '* Kap And'
-
-    wvlMin = 850
-    wvlMax = 1100
-    startt = 0
-    intt = 100#60
-    pixfrac = .5
-
-    # get static psf of virtual grid
-    tess, drizwcs = form(4, rotate=0, target=target, ditherlog=ditherlog, obsdir=obsdir, wvlMin=wvlMin,
-                         wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac, driz_sci=True)
-    y = np.ma.masked_where(tess[:, 0] == 0, tess[:, 0])
-    static_map = np.ma.median(y, axis=0).filled(0)
-
-    pretty_plot(static_map, drizwcs.wcs.cdelt[0], drizwcs.wcs.crval, vmin=0, vmax=1000)
-    write_fits(static_map, target+'_rot.fits')
-
-    datadir = '/mnt/data0/isabel/mec/'
-    ditherdesc = get_ditherdesc(target, datadir, ditherlog, rotate=1)
-
-    # derotate the static psf for each dither time
-    derot_static = np.zeros((len(ditherdesc.description.obs), static_map.shape[0], static_map.shape[1]))
-    for ia, ha in enumerate(ditherdesc.dithHAs):
-        # TODO use wcs and drizzle instead of rot_array
-        starxy = drizwcs.all_world2pix([[ditherdesc.cenRA, ditherdesc.cenDec]], 1)[0].astype(np.int)
-        derot_static[ia] = rot_array(static_map, starxy, -np.rad2deg(ha))
-
-    # create derotated time cube
-    tess, drizwcs = form(4, rotate=1, target=target, ditherlog=ditherlog, obsdir=obsdir, wvlMin=wvlMin,
-                         wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac, driz_sci=True)
-
-    tcube = tess[:,0]
-    for i, image in enumerate(tcube):
-        # shrink the reference psf to the relevant area
-        derot_static[i][image == 0] = 0
-
-        #subtract the reference
-        image -= derot_static[i]
-
-    # sum collapse the differential
-    diff = np.sum(tcube, axis=0)
-    pretty_plot(diff, drizwcs.wcs.cdelt[0], drizwcs.wcs.crval, vmin=100, vmax=1000)
-    plt.imshow(diff, origin='lower')
-    plt.show()
 
 
 def SDI(plot_diagnostics=False, integration_time=100, number_time_bins=10):
@@ -238,53 +169,43 @@ def SDI(plot_diagnostics=False, integration_time=100, number_time_bins=10):
     np.save('./SDI',SDI)
     plt.show()
 
-def ADI_check():
-    myFmt = mdates.DateFormatter('%d')
+def ADI_check(target='HD 984', year=2018, month=12, day=21, observatory='subaru'):
 
-    targets = ['HD 984']
-    rows = 1
-    cols = 1
-    year, month, day = 2018, 12, 21
-    observatory = 'subaru'
-
-    st = datetime.datetime(year=year, month=month, day=day, hour=5, tzinfo=datetime.timezone.utc)  # sunset is 7 pm Hawaii time + 10 hours
-    et = datetime.datetime(year=year, month=month, day=day, hour=16, tzinfo=datetime.timezone.utc)  # sunrise is 6 am Hawaii time + 10 hours
+    st = datetime.datetime(year=year, month=month, day=day, hour=3, tzinfo=datetime.timezone.utc)  # sunset is 5 pm Hawaii time + 10 hours
+    et = datetime.datetime(year=year, month=month, day=day, hour=18, tzinfo=datetime.timezone.utc)  # sunrise is 8 am Hawaii time + 10 hours
 
     uts = np.int_([st.timestamp(), et.timestamp()])
     apo = Observer.at_site(observatory)
     times = range(uts[0], uts[1], 60)
     site = EarthLocation.of_site(observatory)
 
-    fig, axes = plt.subplots(rows, cols)
+    fig, axs = plt.subplots(1, 2, figsize=(9, 3))
     fig.autofmt_xdate()
     dtobs = [datetime.datetime.fromtimestamp(time) for time in times]
 
-    t = 0
-    for r in range(rows):
-        for c in range(cols):
-            print(r,c,t,targets[t],)
-            target = targets[t]
-            t+=1
+    coords = SkyCoord.from_name(target)
+    altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
+    earthrate = 360 / u.sday.to(u.second)
 
-            coords = SkyCoord.from_name(target)
-            altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
-            earthrate = 360 / u.sday.to(u.second)
+    parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
 
-            parallactic_angles = apo.parallactic_angle(times, target).value
+    lat = site.geodetic.lat.rad
+    az = altaz.az.radian
+    alt = altaz.alt.radian
 
-            lat = site.geodetic.lat.rad
-            az = altaz.az.radian
-            alt = altaz.alt.radian
+    rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
+    axs[0].plot(dtobs, rot_rates*3600)
+    axs[0].set_ylabel('rot rate (arcsec/s)')
+    axs[0].set_title(target)
+    axs[1].plot(dtobs, parallactic_angles)
+    axs[1].set_ylabel('Parallactic Angles')
+    axs[1].set_title(target)
+    plt.show()
 
-            rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
-            axes[r, c].plot(dtobs, rot_rates)
-            axes[r, c].plot(dtobs, parallactic_angles)
-            axes[r, c].set_title(target)
 
-            if c == 0:
-                axes[r, c].set_ylabel('rot rate (deg/s)')
 
-    plt.show(block=True)
+
+    plt.show()
 
 
 if __name__ == '__main__':
