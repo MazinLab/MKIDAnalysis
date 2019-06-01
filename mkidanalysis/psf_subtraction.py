@@ -261,20 +261,21 @@ def Sky_Rotation(target='* Kap And', year=2018, month=12, day=24, observatory='s
     plt.show()
 
 
-def ADI_check(target='* Kap And', obs_start=1545626973, obs_end=1545629507, observatory='subaru'):
+def ADI_check(target='* Kap And', obs_start=1545626973, obs_end=1545629507, observatory='subaru', arcseconds = 1):
 
     uts = np.int_([obs_start, obs_end])
     apo = Observer.at_site(observatory)
     times = range(uts[0], uts[1], 1)
     site = EarthLocation.of_site(observatory)
 
+
     fig, axs = plt.subplots(1, 2, figsize=(9, 3))
     fig.autofmt_xdate()
-    dtobs = [datetime.datetime.fromtimestamp(time, pytz.timezone('UTC')) for time in times]
-
+    dtobs = [datetime.datetime.fromtimestamp(time) for time in times]
     coords = SkyCoord.from_name(target)
     altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
     earthrate = 360 / u.sday.to(u.second)
+    interval = obs_end - obs_start
 
     parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
 
@@ -283,11 +284,16 @@ def ADI_check(target='* Kap And', obs_start=1545626973, obs_end=1545629507, obse
     alt = altaz.alt.radian
 
     rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
+    rot_rate_mean = np.mean(rot_rates)
+    angle = rot_rate_mean*(interval)
+    newangle = np.sin(np.deg2rad(angle))*arcseconds
+    pixels = newangle*100
+    print("Your image moved", pixels, "pixels")
     axs[0].plot(dtobs, rot_rates)
     axs[0].set_ylabel('rot rate (deg/s)')
     axs[0].set_title(target)
     axs[1].plot(dtobs, parallactic_angles)
-    axs[1].set_ylabel('Parallactic Angles')
+    axs[1].set_ylabel('Parallactic Angles (radians)')
     axs[1].set_title(target)
     plt.show()
 
