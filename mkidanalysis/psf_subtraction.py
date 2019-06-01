@@ -11,6 +11,7 @@ import astropy.units as u
 from astroplan import Observer
 import astropy
 import datetime
+import pytz
 
 
 def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):
@@ -226,19 +227,19 @@ def SDI(plot_diagnostics=False, integration_time=100, number_time_bins=10):
     np.save('./SDI',SDI)
     plt.show()
 
-def ADI_check(target='HD 984', year=2018, month=12, day=21, observatory='subaru'):
+def Sky_Rotation(target='* Kap And', year=2018, month=12, day=24, observatory='subaru'):
 
     st = datetime.datetime(year=year, month=month, day=day, hour=3, tzinfo=datetime.timezone.utc)  # sunset is 5 pm Hawaii time + 10 hours
     et = datetime.datetime(year=year, month=month, day=day, hour=18, tzinfo=datetime.timezone.utc)  # sunrise is 8 am Hawaii time + 10 hours
 
     uts = np.int_([st.timestamp(), et.timestamp()])
     apo = Observer.at_site(observatory)
-    times = range(uts[0], uts[1], 60)
+    times = range(uts[0], uts[1], 30)
     site = EarthLocation.of_site(observatory)
 
     fig, axs = plt.subplots(1, 2, figsize=(9, 3))
     fig.autofmt_xdate()
-    dtobs = [datetime.datetime.fromtimestamp(time) for time in times]
+    dtobs = [datetime.datetime.fromtimestamp(time, pytz.timezone('UTC')) for time in times]
 
     coords = SkyCoord.from_name(target)
     altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
@@ -251,14 +252,44 @@ def ADI_check(target='HD 984', year=2018, month=12, day=21, observatory='subaru'
     alt = altaz.alt.radian
 
     rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
-    axs[0].plot(dtobs, rot_rates*3600)
-    axs[0].set_ylabel('rot rate (arcsec/s)')
+    axs[0].plot(dtobs, rot_rates)
+    axs[0].set_ylabel('rot rate (deg/s)')
     axs[0].set_title(target)
     axs[1].plot(dtobs, parallactic_angles)
     axs[1].set_ylabel('Parallactic Angles')
     axs[1].set_title(target)
     plt.show()
 
+
+def ADI_check(target='* Kap And', obs_start=1545626973, obs_end=1545629507, observatory='subaru'):
+
+    uts = np.int_([obs_start, obs_end])
+    apo = Observer.at_site(observatory)
+    times = range(uts[0], uts[1], 1)
+    site = EarthLocation.of_site(observatory)
+
+    fig, axs = plt.subplots(1, 2, figsize=(9, 3))
+    fig.autofmt_xdate()
+    dtobs = [datetime.datetime.fromtimestamp(time, pytz.timezone('UTC')) for time in times]
+
+    coords = SkyCoord.from_name(target)
+    altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
+    earthrate = 360 / u.sday.to(u.second)
+
+    parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
+
+    lat = site.geodetic.lat.rad
+    az = altaz.az.radian
+    alt = altaz.alt.radian
+
+    rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
+    axs[0].plot(dtobs, rot_rates)
+    axs[0].set_ylabel('rot rate (deg/s)')
+    axs[0].set_title(target)
+    axs[1].plot(dtobs, parallactic_angles)
+    axs[1].set_ylabel('Parallactic Angles')
+    axs[1].set_title(target)
+    plt.show()
 
 if __name__ == '__main__':
     SDI(plot_diagnostics=True)
