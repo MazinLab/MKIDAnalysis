@@ -5,14 +5,17 @@ import argparse
 from mkidpipeline.imaging.drizzler import form
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
-from MKIDAnalysis.analysis_utils import *
+from mkidanalysis.analysis_utils import *
+from mkidanalysis.contrast_curve import *
+import vip_hci as vip
 from astropy.coordinates import EarthLocation, SkyCoord
 import astropy.units as u
 from astroplan import Observer
 import astropy
 import datetime
 import pytz
-
+import mkidcore.corelog as pipelinelog
+from vip_hci.preproc import cube_derotate, frame_rotate
 
 def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):
     dither_frames=np.load(ditherframe_file)
@@ -91,7 +94,8 @@ def ADI():
     median of the derorated dither
     :return:
     """
-
+    mkidpipeline.logtoconsole()
+    log = pipelinelog.create_log('mkidpipeline.imaging.drizzler', console=True, level="INFO")
     yml = '/mnt/data0/dodkins/src/mkidpipeline/mkidpipeline/imaging/KAnd_drizzler.yml'
 
     wvlMin = 850
@@ -261,7 +265,7 @@ def Sky_Rotation(target='* Kap And', year=2018, month=12, day=24, observatory='s
     plt.show()
 
 
-def ADI_check(target='* Kap And', obs_start=1545626973, obs_end=1545629507, observatory='subaru'):
+def ADI_check(target='* kap And', obs_start=1545626973, obs_end=1545627075, observatory='subaru', target_sep=1000, scale_factor=10):
 
     uts = np.int_([obs_start, obs_end])
     apo = Observer.at_site(observatory)
@@ -277,19 +281,112 @@ def ADI_check(target='* Kap And', obs_start=1545626973, obs_end=1545629507, obse
     earthrate = 360 / u.sday.to(u.second)
 
     parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
+    #These are in radians!
 
     lat = site.geodetic.lat.rad
     az = altaz.az.radian
     alt = altaz.alt.radian
-
     rot_rates = earthrate * np.cos(lat) * np.cos(az) / np.cos(alt)  # Smart 1962
+
+    delta_pa=abs(parallactic_angles[-1]-parallactic_angles[0])
+
+    milliarcsec_traced_y=np.sin(delta_pa)*target_sep
+    pix_traced_y=milliarcsec_traced_y/scale_factor
+
+    milliarcsec_traced_x=(1-np.cos(delta_pa))*target_sep
+    pix_traced_x=milliarcsec_traced_x/scale_factor
+
+    degrees_traced=abs(np.median(rot_rates)*(times[-1]-times[0]))
+    milliarcsec_traced_y_2=np.sin(np.deg2rad(degrees_traced))*target_sep
+    pix_traced_y_2 = milliarcsec_traced_y_2 / scale_factor
+
+    degrees_traced=np.median(rot_rates)*(times[-1]-times[0])
+    milliarcsec_traced_x_2=(1-np.cos(np.deg2rad(degrees_traced)))*target_sep
+    pix_traced_x_2 = milliarcsec_traced_x_2 / scale_factor
+
     axs[0].plot(dtobs, rot_rates)
     axs[0].set_ylabel('rot rate (deg/s)')
-    axs[0].set_title(target)
+    axs[0].set_xlabel('Time (UTC)')
+    axs[0].set_title(target + ' Shift_1=' + str(np.around(pix_traced_y_2, decimals=2)) + ' Shift_2=' + str(
+        np.around(pix_traced_x_2, decimals=2)))
     axs[1].plot(dtobs, parallactic_angles)
-    axs[1].set_ylabel('Parallactic Angles')
-    axs[1].set_title(target)
+    axs[1].set_ylabel('Parallactic Angles (Rad)')
+    axs[1].set_xlabel('Time (UTC)')
+    axs[1].set_title(target + ' Shift_1=' + str(np.around(pix_traced_y, decimals=2)) + ' Shift_2=' + str(
+        np.around(pix_traced_x, decimals=2)))
     plt.show()
 
+def make_angle_list(target='* kap And', obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
+
+    uts = np.int_([obs_start, obs_start+(nsteps*int_time)])
+    apo = Observer.at_site(observatory)
+    times = range(uts[0], uts[1], int_time)
+    parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
+    #These are in radians!
+
+    return(np.rad2deg(np.array(parallactic_angles)))
+
+def median_sub_VIP(dither_stack_file, mode='fullfr', collapse='median', target='* kap And',
+               obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
+
+    data_stack=np.load(dither_stack_file)
+    angle_list=make_angle_list(target=target, obs_start=obs_start, int_time=int_time, nsteps=nsteps, observatory=observatory)
+
+    delta_pa = angle_list[-1]-angle_list[0]
+    print(delta_pa)
+
+
+    resid_cube, resid_cube_derot, collapse_frame=vip.medsub.medsub_source.median_sub_MEC(
+        cube=data_stack, angle_list=angle_list, scale_list=None,fwhm=2.5, asize=2.5, full_output=True,
+        collapse=collapse, mode=mode, verbose=True)
+
+    return(resid_cube, resid_cube_derot, collapse_frame)
+
+def derotate_cube(cube, target='* kap And', obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
+    cube = nans_to_zeros(cube)
+    angle_list = make_angle_list(target=target, obs_start=obs_start, int_time=int_time, nsteps=nsteps,
+                                 observatory=observatory)
+    derotated_cube = cube_derotate(cube, angle_list)
+    derotated_cube = zeros_to_nans(derotated_cube)
+
+    return(derotated_cube)
+
+def derotate_frame(frame, target='* kap And', obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
+    frame = nans_to_zeros(frame)
+    angle_list = make_angle_list(target=target, obs_start=obs_start, int_time=int_time, nsteps=nsteps,
+                                 observatory=observatory)
+    angle = angle_list[-1] - angle_list[0]
+    rotated_frame = frame_rotate(frame, angle)
+    rotated_frame = zeros_to_nans(rotated_frame)
+
+    return(rotated_frame)
+
+def derotate_cube_CPS(int_time_file, stack_file, HPM = True, target='* kap And', obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
+    int_time_array=np.load(int_time_file)
+    stack=np.load(stack_file)
+
+    if HPM:
+        stack=threshold_HPM_stack(stack, save=False, factor=3)
+
+    stack_derotated = derotate_cube(stack, target=target, obs_start=obs_start, int_time=int_time, nsteps=nsteps, observatory=observatory)
+    stacked_derotated = np.nansum(stack_derotated, axis=0)
+
+    int_time_array_derotated = derotate_cube(int_time_array, target=target, obs_start=obs_start, int_time=int_time, nsteps=nsteps, observatory=observatory)
+    int_time_derotated = np.nansum(int_time_array_derotated, axis=0)
+
+    stacked_normalized =  stacked_derotated/int_time_derotated
+
+    pa(stacked_normalized)
+    return(stacked_normalized, int_time_array_derotated, stacked_derotated)
+
+
+
 if __name__ == '__main__':
-    SDI(plot_diagnostics=True)
+    mkidpipeline.logtoconsole()
+    log = pipelinelog.create_log('mkidpipeline.imaging.drizzler', console=True, level="INFO")
+    resid_cube_kap, resid_cube_derot_kap, collapse_frame_kap=median_sub_VIP(dither_stack_file='/mnt/data0/isabel/microcastle/kappaAnd12232018/kAnd_stack.npy', mode='fullfr', collapse='mean', target='* kap And',
+               obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru')
+    resid_cube_984, resid_cube_derot_984, collapse_frame_984=median_sub_VIP(dither_stack_file='/mnt/data0/isabel/microcastle/HD984/HD984numpyarrays/HD984YBand_stack.npy', mode='fullfr', collapse='mean', target='HD 984',
+               obs_start=1545454619, int_time=60, nsteps=25, observatory='subaru')
+    resid_cube_34700, resid_cube_derot_34700, collapse_frame_34700 = median_sub_VIP(dither_stack_file='/mnt/data0/isabel/microcastle/HD34700_02252019/HD34700_stack.npy', mode='fullfr',collapse='mean', target='HD 34700',
+                obs_start = 1551167352, int_time = 100, nsteps = 25, observatory = 'subaru')
