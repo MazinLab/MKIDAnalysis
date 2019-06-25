@@ -272,13 +272,14 @@ def ADI_check(target='* kap And', obs_start=1545626973, obs_end=1545627075, obse
     times = range(uts[0], uts[1], 1)
     site = EarthLocation.of_site(observatory)
 
+
     fig, axs = plt.subplots(1, 2, figsize=(9, 3))
     fig.autofmt_xdate()
-    dtobs = [datetime.datetime.fromtimestamp(time, pytz.timezone('UTC')) for time in times]
-
+    dtobs = [datetime.datetime.fromtimestamp(time) for time in times]
     coords = SkyCoord.from_name(target)
     altaz = apo.altaz(astropy.time.Time(val=times, format='unix'), coords)
     earthrate = 360 / u.sday.to(u.second)
+    interval = obs_end - obs_start
 
     parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
     #These are in radians!
@@ -310,10 +311,12 @@ def ADI_check(target='* kap And', obs_start=1545626973, obs_end=1545627075, obse
     axs[0].set_title(target + ' Shift_1=' + str(np.around(pix_traced_y_2, decimals=2)) + ' Shift_2=' + str(
         np.around(pix_traced_x_2, decimals=2)))
     axs[1].plot(dtobs, parallactic_angles)
+
     axs[1].set_ylabel('Parallactic Angles (Rad)')
     axs[1].set_xlabel('Time (UTC)')
     axs[1].set_title(target + ' Shift_1=' + str(np.around(pix_traced_y, decimals=2)) + ' Shift_2=' + str(
         np.around(pix_traced_x, decimals=2)))
+
     plt.show()
 
 def make_angle_list(target='* kap And', obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
