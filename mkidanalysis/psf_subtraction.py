@@ -5,8 +5,11 @@ import argparse
 from mkidpipeline.imaging.drizzler import form
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
+from mkidpipeline.config import config
+import mkidpipeline.imaging.drizzler as drizzler
+from mkidpipeline import badpix as bp
+import mkidpipeline as pipe
 from mkidanalysis.analysis_utils import *
-from mkidanalysis.contrast_curve import *
 import vip_hci as vip
 from astropy.coordinates import EarthLocation, SkyCoord
 import astropy.units as u
@@ -86,65 +89,64 @@ def clipped_zoom(img, zoom_factor, **kwargs):
         out = img
     return out
 
-def ADI():
+def ADI(file='./ADI_HPM.fits', datafile = '/mnt/data0/isabel/mec/HD1160/data_HD1160.yml', outfile = '/mnt/data0/isabel/mec/HD1160/out_HD1160.yml',
+        cfgfile = '/mnt/data0/isabel/mec/HD1160/pipe_HD1160.yml', temporal_file_derot='/mnt/data0/isabel/mec/HD1160/HD1160_temporal.fits',
+        temporal_file='/mnt/data0/isabel/mec/HD1160/HD1160_temporal_NDR.fits'):
     """
-    This function needs to be updated!!!
     First median collapsing a time cube of all the raw dither images to a get a static PSF of the virtual grid. For
     each dither derotate the static PSF and isolate the relevant area. Subtract that static reference from the
     median of the derorated dither
     :return:
     """
-    mkidpipeline.logtoconsole()
-    log = pipelinelog.create_log('mkidpipeline.imaging.drizzler', console=True, level="INFO")
-    yml = '/mnt/data0/dodkins/src/mkidpipeline/mkidpipeline/imaging/KAnd_drizzler.yml'
 
-    wvlMin = 850
-    wvlMax = 1100
-    startt = 0
-    intt = 100#60
-    pixfrac = .5
-    cfg = mkidpipeline.config.load_task_config(yml)
+    pipe.configure_pipeline(cfgfile)
 
-    dither = cfg.dither
+    out_collection = pipe.load_output_description(outfile, datafile=datafile)
+    outputs = out_collection.outputs
 
-    # get static psf of virtual grid
-    scidata = form(dither, mode='cube', wvlMin=wvlMin,
-                   wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac,
-                   derotate=False, fitsname=None)
+    scidata_static = fits.open(temporal_file)
+    tess_static = scidata_static[1].data
 
-    tess = scidata.data
-
-
-    y = np.ma.masked_where(tess[:, 0] == 0, tess[:, 0])
+    y = np.ma.masked_where(tess_static[:, 0] == 0, tess_static[:, 0])
     static_map = np.ma.median(y, axis=0).filled(0)
 
-    ditherdesc = DitherDescription(dither, target=dither.name)
+    scidata = fits.open(temporal_file_derot)
+    tess = scidata[1].data
+
+    y2 = np.ma.masked_where(tess[:, 0] == 0, tess[:, 0])
+    rot_map = np.ma.median(y2, axis=0).filled(0)
+    tcube = y2.data
+
+    timesteps=len(tcube[:, 0, 0])
+
+    HAs = make_angle_list(target=outputs[0].data.target, obs_start=outputs[0].data.obs[0].start,
+                         int_time=int_time, nsteps=timesteps, observatory=outputs[0].data.observatory)
+
 
     # derotate the static psf for each dither time
-    derot_static = np.zeros((len(ditherdesc.description.obs), static_map.shape[0], static_map.shape[1]))
-    for ia, ha in enumerate(ditherdesc.dithHAs):
-        # TODO use wcs and drizzle instead of rot_array
-        starxy = scidata.wcs.all_world2pix([[ditherdesc.cenRA, ditherdesc.cenDec]], 1)[0].astype(np.int)
-        derot_static[ia] = rot_array(static_map, starxy, -np.rad2deg(ha))
+    derot_static = np.zeros([timesteps, static_map.shape[0], static_map.shape[1]])
+    starxy = [int(scidata[1].header['CRPIX1']), int(scidata[1].header['CRPIX2'])]
+    for ia, ha in enumerate(HAs):
+        print(ia, ha)
+        derot_static[ia] = rot_array(static_map, starxy, -(np.rad2deg(HAs[0])-np.rad2deg(ha)))
 
-    # create derotated time cube
-    scidata = form(dither, mode='cube', wvlMin=wvlMin,
-                   wvlMax=wvlMax, startt=startt, intt=intt, pixfrac=pixfrac,
-                   derotate=True, fitsname=None)
-
-    tess = scidata.data
-    tcube = tess[:,0]
     for i, image in enumerate(tcube):
         # shrink the reference psf to the relevant area
+        print(i)
         derot_static[i][image == 0] = 0
 
         #subtract the reference
         image -= derot_static[i]
 
     # sum collapse the differential
-    diff = np.sum(tcube, axis=0)
+    diff = np.ma.mean(tcube, axis=0).filled(0)
     plt.imshow(diff, origin='lower')
     plt.show()
+
+    hdul = fits.HDUList([fits.PrimaryHDU(header=scidata[1].header),
+                         fits.ImageHDU(data=diff, header=scidata[1].header)])
+
+    hdul.writeto(file, overwrite=True)
 
 def SDI(plot_diagnostics=False, integration_time=100, number_time_bins=10):
     """
@@ -327,13 +329,15 @@ def make_angle_list(target='* kap And', obs_start=1545626973, int_time=100, nste
     parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'), SkyCoord.from_name(target)).value
     #These are in radians!
 
-    return(np.rad2deg(np.array(parallactic_angles)))
+    return(np.array(parallactic_angles))
 
 def median_sub_VIP(dither_stack_file, mode='fullfr', collapse='median', target='* kap And',
                obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru'):
 
     data_stack=np.load(dither_stack_file)
     angle_list=make_angle_list(target=target, obs_start=obs_start, int_time=int_time, nsteps=nsteps, observatory=observatory)
+
+    angle_list=-angle_list[0]+angle_list
 
     delta_pa = angle_list[-1]-angle_list[0]
     print(delta_pa)
@@ -385,11 +389,4 @@ def derotate_cube_CPS(int_time_file, stack_file, HPM = True, target='* kap And',
 
 
 if __name__ == '__main__':
-    mkidpipeline.logtoconsole()
-    log = pipelinelog.create_log('mkidpipeline.imaging.drizzler', console=True, level="INFO")
-    resid_cube_kap, resid_cube_derot_kap, collapse_frame_kap=median_sub_VIP(dither_stack_file='/mnt/data0/isabel/microcastle/kappaAnd12232018/kAnd_stack.npy', mode='fullfr', collapse='mean', target='* kap And',
-               obs_start=1545626973, int_time=100, nsteps=25, observatory='subaru')
-    resid_cube_984, resid_cube_derot_984, collapse_frame_984=median_sub_VIP(dither_stack_file='/mnt/data0/isabel/microcastle/HD984/HD984numpyarrays/HD984YBand_stack.npy', mode='fullfr', collapse='mean', target='HD 984',
-               obs_start=1545454619, int_time=60, nsteps=25, observatory='subaru')
-    resid_cube_34700, resid_cube_derot_34700, collapse_frame_34700 = median_sub_VIP(dither_stack_file='/mnt/data0/isabel/microcastle/HD34700_02252019/HD34700_stack.npy', mode='fullfr',collapse='mean', target='HD 34700',
-                obs_start = 1551167352, int_time = 100, nsteps = 25, observatory = 'subaru')
+    ADI()
