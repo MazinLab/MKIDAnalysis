@@ -3,7 +3,24 @@ from scipy import ndimage
 from mkidcore.instruments import CONEX2PIXEL
 from scipy.interpolate import griddata
 import os
+from astropy.time import Time
+from astropy.coordinates import SkyCoord
+from astropy import units as u
+from mkidpipeline.hdf import ObsFile
+from mkidpipeline.badpix import hpm_flux_threshold
 
+
+def precess_them_coordinates(obj_coords='23 40 24.5076320 +44 20 02.156595', coord_unit=(u.hourangle, u.deg), parallax=19.37,
+                             pm_ra_cosdec=80.73*u.mas/u.yr, pm_dec=-18.70*u.mas/u.yr,frame='icrs', obstime=Time('J2000'), obs_start=1545626973):
+
+    coords_J2000 = SkyCoord(obj_coords, unit=coord_unit, distance=(1/(parallax/1000.))*u.pc, pm_ra_cosdec=pm_ra_cosdec, pm_dec=pm_dec,frame=frame, obstime=obstime)
+    new_obstime = Time(obs_start, format='unix')
+    coords_ob = coords_J2000.apply_space_motion(new_obstime=new_obstime)
+
+    ra_new_deg = coords_ob.ra.deg
+    dec_new_deg = coords_ob.dec.deg
+
+    return(coords_ob, ra_new_deg, dec_new_deg)
 
 def ditherp_2_pixel(positions):
     """ A function to convert the connex offset to pixel displacement"""
@@ -177,3 +194,18 @@ def interpolate_image(image, method='linear'):
     interpolated_frame = np.reshape(interpolated_frame, finalshape)  # reshape interpolated frame into original shape
 
     return interpolated_frame
+
+def mask_hot_pixels_simple(file):
+
+    obsfile = ObsFile(file)
+
+    raw_image_dict = obsfile.getPixelCountImage(applyWeight=True, applyTPFWeight=True, wvlStart=850, wvlStop=1100)
+    bad_pixel_solution = hpm_flux_threshold(raw_image_dict['image'], dead_mask=obsfile.pixelMask, fwhm=10)
+    hot_mask = bad_pixel_solution['hot_mask']
+
+    # Combine the bad pixel masks into a master mask
+    obsfile.enablewrite()
+    obsfile.applyHotPixelMask(hot_mask)
+    obsfile.disablewrite()
+
+    obsfile.file.close()
