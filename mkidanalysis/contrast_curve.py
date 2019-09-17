@@ -16,7 +16,7 @@ from astropy.modeling.models import AiryDisk2D
 from mkidanalysis.analysis_utils import *
 
 
-def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, ycon, wvlStart=900, wvlStop=1100, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
+def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, ycon, wvlStart=850, wvlStop=1100, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
     """
     output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
     target_info='51EriDither3'
@@ -93,7 +93,7 @@ def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, yco
         rough_shiftsy.append(dy)
         centroidsx.append(refpointx - dx)
         centroidsy.append(refpointy - dy)
-        
+
         if median_combine:
             padded_frame = embed_image(image, framesize=pad_fraction, pad_value=np.nan)
             shifted_frame = rotate_shift_image(padded_frame, 0, dx, dy)
@@ -106,7 +106,7 @@ def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, yco
 
             eff_int_time_frames.append(eff_int_time)
             ideal_int_time_frames.append(ideal_int_time)
-        
+
         dither_frames.append(shifted_frame)
 
         if save_shifts:
@@ -144,6 +144,60 @@ def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, yco
         pa(final_image/eff_int_time_frame)
 
 
+def shift_and_add_image(output_dir, target_info, xcon, ycon, frame=22):
+    """
+    output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
+    target_info='51EriDither3'
+    int_time=60
+    xcon = [-0.1, -0.1, -0.1, -0.1, -0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.2, 0.2, 0.2, 0.2, 0.2, 0.35, 0.35, 0.35, 0.35, 0.35, 0.5, 0.5, 0.5, 0.5, 0.5]
+    ycon = [-0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5, -0.5, -0.25, 0.0, 0.25, 0.5]
+    obsfile_list= ['1547374551.h5','1547374583.h5','1547374614.h5','1547374646.h5','1547374677.h5','1547374709.h5','1547374740.h5','1547374772.h5','1547374803.h5',
+                   '1547374834.h5','1547374866.h5','1547374897.h5','1547374928.h5','1547374959.h5','1547374990.h5','1547375022.h5','1547375053.h5','1547375085.h5',
+                   '1547375116.h5','1547375147.h5','1547375179.h5','1547375211.h5','1547375242.h5','1547375273.h5','1547375304.h5']
+    """
+
+    npos = len(xcon)
+
+    numpyfxnlist = []
+
+    for i in range(npos):
+        outfile = output_dir + target_info + 'HPMasked%i.npy' % i
+        numpyfxnlist.append(outfile)
+
+    rough_shiftsx = []
+    rough_shiftsy = []
+    centroidsx = []
+    centroidsy = []
+
+    refpointx = CONEX2PIXEL(xcon[frame], ycon[frame])[0]
+    refpointy = CONEX2PIXEL(xcon[frame], ycon[frame])[1]
+
+    dither_frames = []
+
+    outfile = output_dir + target_info + 'check_centroid'
+
+    for i in range(npos):
+        xpos = CONEX2PIXEL(xcon[i], ycon[i])[0]
+        ypos = CONEX2PIXEL(xcon[i], ycon[i])[1]
+
+        dx = refpointx - xpos
+        dy = refpointy - ypos
+
+        image = np.load(numpyfxnlist[i])
+        image[image == 0] = ['nan']
+        rough_shiftsx.append(dx)
+        rough_shiftsy.append(dy)
+        centroidsx.append(refpointx - dx)
+        centroidsy.append(refpointy - dy)
+
+        shifted_frame = rotate_shift_image(image, 0, dx, dy)
+        dither_frames.append(shifted_frame)
+
+
+    np.save(outfile, np.nanmedian(np.array(dither_frames), axis=0))
+    pa(np.nanmedian(np.array(dither_frames), axis=0))
+
+
 def quick_hpm(image, outfilename='./image_reHPM', save=True):
     dead_mask = np.isnan(image)
     reHPM = bp.hpm_flux_threshold(image, fwhm=4, dead_mask=dead_mask)
@@ -162,10 +216,12 @@ def threshold_HPM(image, outfilename='./image_reHPM', save=True, factor=3):
     else:
         return image
 
-def threshold_HPM_stack(stack, outfilename='./stack_reHPM', save=True, factor=3):
+def threshold_HPM_stack(stack, outfilename='./stack_reHPM', save=True, factor=3, value=np.nan):
     stack = zeros_to_nans(stack)
     for i in np.arange(stack.shape[0]):
-        stack[i, :, :][stack[i, :, :]>np.nanmean(stack[i, :, :])+factor*np.nanstd(stack[i, :, :])] = np.nan
+        stack[i, :, :][stack[i, :, :]>np.nanmean(stack[i, :, :])+factor*np.nanstd(stack[i, :, :])] = value
+    if value==0:
+        stack = nans_to_zeros(stack)
     if save:
         np.save(outfilename, stack)
     else:
@@ -174,6 +230,7 @@ def threshold_HPM_stack(stack, outfilename='./stack_reHPM', save=True, factor=3)
 
 def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=False, ND_filter_bool=True,
                    sat_spotcorr=5.5, ND_filtercorr=1, fwhm_est=2.5):
+
     data = np.load(datafileFLUX)
     fig, axs = plt.subplots(1, 1)
     axs.imshow(data, origin='lower', interpolation='nearest')
@@ -215,6 +272,88 @@ def flux_estimator(datafileFLUX, xcentroid_flux, ycentroid_flux, sat_spot_bool=F
 
     return {'norm': norm, 'xpos': xpos, 'ypos': ypos, 'factor': factor}
 
+def find_occulted_center(datafile, spot_positions, fwhm_est = 2.5):
+    #Go from top left spot clockwise
+    data = np.load(datafile)
+
+    fit_pos=[]
+    norm_list=[]
+    for i in np.arange(len(spot_positions)):
+        fig, axs = plt.subplots(1, 1)
+        axs.imshow(data, origin='lower', interpolation='nearest')
+
+        marker = '+'
+        ms, mew = 30, 2.
+        box_size = fwhm_est * 5
+
+        mask = np.isnan(data)
+
+        axs.plot(spot_positions[i][0], spot_positions[i][1], color='red', marker=marker, ms=ms, mew=mew)  # check how we did
+        positions = centroids.centroid_sources(data, spot_positions[i][0], spot_positions[i][1], box_size=int(box_size),
+                                           centroid_func=centroid_com, mask=mask)
+        axs.plot(positions[0], positions[1], color='blue', marker=marker, ms=ms, mew=mew)  # check how the fit did
+        plt.title('Estimate in red, fit in blue')
+        plt.show()
+
+        fit_pos.append([positions[0][0], positions[1][0]])
+
+        positions_ap = [(positions[0][0], positions[1][0])]
+        apertures = CircularAperture(positions_ap, r=fwhm_est)
+        phot_table = aperture_photometry(data, apertures, mask=mask)
+
+        fig, axs = plt.subplots(1, 1)
+        axs.imshow(data, origin='lower', interpolation='nearest')
+        apertures.plot(color='white', lw=1)
+        plt.show()
+
+        norm = phot_table['aperture_sum'].data[0]
+        norm_list.append(norm)
+
+    xcenter_est1 = np.median([fit_pos[0][0], fit_pos[1][0]])
+    ycenter_est1 = np.median([fit_pos[0][1], fit_pos[2][1]])
+
+    xcenter_est2 = np.median([fit_pos[2][0], fit_pos[3][0]])
+    ycenter_est2 = np.median([fit_pos[1][1], fit_pos[3][1]])
+
+    xcenter = np.median([xcenter_est1, xcenter_est2])
+    ycenter = np.median([ycenter_est1, ycenter_est2])
+
+    fig, axs = plt.subplots(1, 1)
+    axs.imshow(data, origin='lower', interpolation='nearest')
+
+    marker = '+'
+    ms, mew = 30, 2.
+
+    axs.plot(xcenter, ycenter, color='red', marker=marker, ms=ms, mew=mew)  # check how we did
+    plt.show()
+
+    print(np.round(xcenter), np.round(ycenter), norm_list)
+
+    return([np.round(xcenter), np.round(ycenter)], norm_list)
+
+def find_unocculted_center(datafile, star_position, fwhm_est = 2.5):
+    #One star
+    data = np.load(datafile)
+
+    fig, axs = plt.subplots(1, 1)
+    axs.imshow(data, origin='lower', interpolation='nearest')
+
+    marker = '+'
+    ms, mew = 30, 2.
+    box_size = fwhm_est * 5
+
+    mask = np.isnan(data)
+
+    axs.plot(star_position[0], star_position[1], color='red', marker=marker, ms=ms, mew=mew)  # check how we did
+    positions = centroids.centroid_sources(data, star_position[0], star_position[1], box_size=int(box_size),
+                                           centroid_func=centroid_com, mask=mask)
+    axs.plot(positions[0], positions[1], color='blue', marker=marker, ms=ms, mew=mew)  # check how the fit did
+    plt.title('Estimate in red, fit in blue')
+    plt.show()
+
+    print(np.round(positions[0]), np.round(positions[1]))
+
+    return(np.round(positions[0]), np.round(positions[1]))
 
 def PSF_estimator(datafilePSF, xcentroid_PSF, ycentroid_PSF, temporalfilePSF=None, trueFWHM=2.5):
 
@@ -231,21 +370,9 @@ def PSF_estimator(datafilePSF, xcentroid_PSF, ycentroid_PSF, temporalfilePSF=Non
 
     axs.plot(xcentroid_PSF, ycentroid_PSF, color='red', marker=marker, ms=ms, mew=mew)  # check how we did
     plt.show()
-    
-    slicedatavert=data[:, xcentroid_PSF]
-    slicedatavert[np.where(slicedatavert == np.nanmax(slicedatavert))] = (2000 / 0.0175)
-    slicedatavertnorm = slicedatavert / np.nanmax(slicedatavert)
-
-    slicedatahoriz=data[ycentroid_PSF, :]
-    slicedatahoriz[np.where(slicedatahoriz == np.nanmax(slicedatahoriz))] = (1300 / 0.0175)
-    slicedatahoriznorm = slicedatahoriz / np.nanmax(slicedatahoriz)
 
     slicedatavert_average=np.nanmean(data[:, xcentroid_PSF-1:xcentroid_PSF+1], axis=1)
-    slicedatavertnorm_average=slicedatavert_average/np.nanmax(slicedatavert_average)
-
     slicedatahoriz_average=np.nanmean(data[ycentroid_PSF-1:ycentroid_PSF+1, :], axis=0)
-    slicedatahoriznorm_average=slicedatahoriz_average/np.nanmax(slicedatahoriz_average)
-
 
     a2d=AiryDisk2D(radius=trueFWHM, x_0=xcentroid_PSF, y_0=ycentroid_PSF)
     pt=a2d(*np.mgrid[0:data.shape[1], 0:data.shape[0]])
@@ -253,23 +380,19 @@ def PSF_estimator(datafilePSF, xcentroid_PSF, ycentroid_PSF, temporalfilePSF=Non
 
     sliceairyvert=airy[:, xcentroid_PSF-1]
     sliceairyvertnorm=sliceairyvert/np.nanmax(sliceairyvert)
-    noisevert = np.random.normal(0, .001, sliceairyvert.shape)
 
     sliceairyhoriz=airy[ycentroid_PSF+1, :]
     sliceairyhoriznorm=sliceairyhoriz/np.nanmax(sliceairyhoriz)
-    noisehoriz = np.random.normal(0, .001, sliceairyhoriz.shape)
 
     plt.plot(sliceairyhoriznorm)
-#    plt.plot(slicedatahoriznorm_average)
-    plt.plot(slicedatahoriznorm)
+    plt.plot(slicedatahoriz_average)
     plt.title('Ideal 1D Airy PSF with FWHM 1.22 lambda/D with actual PSF from a single dither (one slice)')
     plt.ylabel('Normalized Mean Counts/60sec')
     plt.xlabel('Pixels (horizontal)')
     plt.show()
 
     plt.plot(sliceairyvertnorm)
- #   plt.plot(slicedatavertnorm_average)
-    plt.plot(slicedatavertnorm)
+    plt.plot(slicedatavert_average)
     plt.title('Ideal 1D Airy PSF with FWHM 1.22 lambda/D with actual PSF from a single dither (one slice)')
     plt.ylabel('Normalized Mean Counts/60sec')
     plt.xlabel('Pixels (vertical)')
@@ -293,7 +416,7 @@ def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242,
     actualcenterx = int(data.shape[1] / 2)
     actualcentery = int(data.shape[0] / 2)
     roll = [actualcenterx - xcenter, actualcentery - ycenter]
-    print(actualcenterx, actualcentery)
+
     proc_data_centered = np.roll(proc_data, roll[1], 0)
     proc_data_centered = np.roll(proc_data_centered, roll[0], 1)
 
@@ -328,7 +451,6 @@ def make_CoronagraphicProfile(datafileCC, unoccultedfile=None, normalize=1, fwhm
         positions_ap1.append([centerx, centery - i * lod])
     apertures1 = CircularAperture(positions_ap1, r=lod / 2)
     phot_table1 = aperture_photometry(speckles, apertures1, mask=dead_mask)
-    print(phot_table1)
 
     fig, axs = plt.subplots(1, 1)
     axs.imshow(speckles, origin='lower', interpolation='nearest')
@@ -505,12 +627,13 @@ def make_CC(datafileCC, unoccultedfile=None, calc_flux=False, normalize=1, fwhm_
 
     fig, ax1 = plt.subplots()
 
-    ax1.plot(sep_full[1:], spMeans[1:] / norm, linewidth=2, label=r'Azimuthally Averaged Mean Coronagraphic Intensity')
-    ax1.plot(sep_full[1:], spStds[1:] / norm, linestyle='-.', linewidth=2, label=r'Azimuthal Standard Deviation')
-    ##ax1.plot(sep_full[1:], np.sqrt(spMeans[1:]) / norm, linestyle='-.', linewidth=2, label=r'Square Root of the Azimuthally Averaged Mean Coronagraphic Intensity')
-
     if unoccultedfile:
         ax1.plot(sep_full[1:], (psfMeans[1:]/factor) / norm, linewidth=2, label=r'Unocculted PSF Profile')
+
+    ax1.plot(sep_full[1:], spMeans[1:] / norm, linewidth=2, label=r'Coronagraphic PSF Profile')
+    ax1.plot(sep_full[1:], spStds[1:] / norm, linestyle='-.', linewidth=2, label=r'Azimuthal Standard Deviation')
+    ax1.plot(sep_full[1:], np.sqrt(spMeans[1:]) / norm, linestyle='-.', linewidth=2, label=r'Square Root of the Azimuthally Averaged Mean Coronagraphic Intensity')
+
 
     ax1.axvline(x=target_pos/fwhm_est, linewidth=2, color='green', label=r'Location of target')
     ax1.axhline(y=target_contrast, linewidth=2, color='red',label=r'Target Contrast J Band')
