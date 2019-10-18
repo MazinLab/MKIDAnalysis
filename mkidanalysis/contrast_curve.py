@@ -16,7 +16,7 @@ from astropy.modeling.models import AiryDisk2D
 from mkidanalysis.analysis_utils import *
 
 
-def align_stack_image(starts, ends, pos, obsfile_dir, output_dir, target_info, wvlStart=850, wvlStop=1100, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
+def align_stack_image(starts, ends, pos, obsfile_dir, output_dir, target_info, wvlStart=850, wvlStop=1100, darkFrameCPS=None, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
     """
     output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
     target_info='51EriDither3'
@@ -49,6 +49,8 @@ def align_stack_image(starts, ends, pos, obsfile_dir, output_dir, target_info, w
                      'seconds of data from wavelength', wvlStart,'to ', wvlStop)
 
             saveim=img['image'].T
+            if darkFrameCPS is not None:
+                saveim -= darkFrameCPS.T*(ends[i] - starts[i])
             obsfile.file.close()
 
             outfile = output_dir + target_info + 'HPMasked%i.npy' % i
