@@ -6,7 +6,7 @@ import os
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
-from mkidpipeline.hdf import ObsFile
+from mkidpipeline.hdf.photontable import ObsFile
 from mkidpipeline.badpix import hpm_flux_threshold
 
 

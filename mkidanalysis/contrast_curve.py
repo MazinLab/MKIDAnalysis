@@ -16,7 +16,7 @@ from astropy.modeling.models import AiryDisk2D
 from mkidanalysis.analysis_utils import *
 
 
-def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, ycon, wvlStart=850, wvlStop=1100, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
+def align_stack_image(starts, ends, pos, obsfile_dir, output_dir, target_info, wvlStart=850, wvlStop=1100, median_combine=False, make_numpy=True, save_shifts=True, hpm_again=True):
     """
     output_dir='/mnt/data0/isabel/microcastle/51Eri/51Eriout/dither3/'
     target_info='51EriDither3'
@@ -28,21 +28,25 @@ def align_stack_image(obsfile_list, output_dir, target_info, int_time, xcon, yco
                    '1547375116.h5','1547375147.h5','1547375179.h5','1547375211.h5','1547375242.h5','1547375273.h5','1547375304.h5']
     """
 
-    npos = len(obsfile_list)
+    npos = len(starts)
+    pos = np.asarray(pos)
+    xcon = pos[:,0]
+    ycon = pos[:,1]
+    int_time = ends[0] - starts[0]
 
     numpyfxnlist = []
 
     if make_numpy:
         for i in range(npos):
-            obsfile = obs(obsfile_list[i], mode='write')
+            obsfile = obs(os.path.join(obsfile_dir, str(int(starts[i]))) + '.h5', mode='write')
             if not wvlStart:
-                img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time)
-                print('Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data')
+                img = obsfile.getPixelCountImage(firstSec=starts[i] - int(starts[i]), integrationTime=ends[i]-starts[i])
+                print('Running getPixelCountImage on ', starts[i] - int(starts[i]), 'seconds to ', ends[i]-starts[i], 'seconds of data')
             else:
-                img = obsfile.getPixelCountImage(firstSec=0, integrationTime=int_time, applyWeight=True, flagToUse=0,
-                                             wvlStart=wvlStart, wvlStop=wvlStop)
-                print('Running getPixelCountImage on ', 0, 'seconds to ', int_time, 'seconds of data from wavelength ',
-                      wvlStart,'to ', wvlStop)
+                img = obsfile.getPixelCountImage(firstSec=starts[i] - int(starts[i]), integrationTime=ends[i]-starts[i],
+                                             applyWeight=True, flagToUse=0, wvlStart=wvlStart, wvlStop=wvlStop)
+                print('Running getPixelCountImage on ', starts[i] - int(starts[i]), 'seconds to ', ends[i]-starts[i], 
+                     'seconds of data from wavelength', wvlStart,'to ', wvlStop)
 
             saveim=img['image'].T
             obsfile.file.close()
@@ -400,6 +404,7 @@ def PSF_estimator(datafilePSF, xcentroid_PSF, ycentroid_PSF, temporalfilePSF=Non
 
 
 def prepare_forCC(datafile, outfile_name, interp=True, smooth=True, xcenter=242, ycenter=180, box_size=100):
+    #use for centering psf - datafile is output from alignstack
     data = np.load(datafile)
 
     if interp:
@@ -475,6 +480,7 @@ def make_CoronagraphicProfile(datafileCC, unoccultedfile=None, normalize=1, fwhm
 
 def make_CC(datafileCC, unoccultedfile=None, calc_flux=False, normalize=1, fwhm_est=2.5, nlod=20, plot=False,
             verbose=False,target_pos=95, target_contrast=2.5e-5, **fluxestkwargs):
+            #requires psf to be centered in image, use prepareforcc first
     if unoccultedfile and calc_flux:
         normdict = flux_estimator(unoccultedfile, **fluxestkwargs)
         norm = normdict['norm']
