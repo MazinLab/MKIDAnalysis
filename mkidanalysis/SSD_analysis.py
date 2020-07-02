@@ -32,8 +32,8 @@ from mkidpipeline.imaging.drizzler import *
 
 
 class SSDAnalyzer:
-    def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', ncpu=1, save_plot=False, set_ip_zero=False,
-                 startw=850, stopw=1375):
+    def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', ncpu=1, save_plot=False, prior=None,
+                 prior_sig=None, set_ip_zero=False, startw=850, stopw=1375):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
@@ -43,6 +43,8 @@ class SSDAnalyzer:
         self.stopw = stopw
         self.set_ip_zero = set_ip_zero
         self.save_plot = save_plot
+        self.prior=prior
+        self.prior_sig=prior_sig
 
     def run_ssd(self):
         """
@@ -52,7 +54,8 @@ class SSDAnalyzer:
         drizzled total intensity image in plot_dir if save_plot=True
         """
         getLogger(__name__).info('Calculating Ic, Ip, and Is')
-        calc_ic_is_ip(self.h5_dir, self.component_dir, ncpu=self.ncpu, set_ip_zero=self.set_ip_zero)
+        calc_ic_is_ip(self.h5_dir, self.component_dir, ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig,
+                      set_ip_zero=self.set_ip_zero)
         getLogger(__name__).info('Initializing fits files')
         initialize_fits(self.h5_dir, self.fits_dir, startw=self.startw, stopw=self.stopw, ncpu=self.ncpu)
         component_types = ['Ic/', 'Is/', 'Ip/']
@@ -123,7 +126,7 @@ def init_fits(fn, out_file_path, startw=850, stopw=1375):
     hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
 
 
-def calc_ic_is_ip(data_path, component_dir, ncpu=1, set_ip_zero=False):
+def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False):
     """
     wrapper for running binfreeSSD
     :param data_path: location of the h5 files to run SSD on
@@ -136,11 +139,11 @@ def calc_ic_is_ip(data_path, component_dir, ncpu=1, set_ip_zero=False):
         if fn.endswith('.h5'):
             fn_list.append(data_path + fn)
     p = Pool(ncpu)
-    f = partial(calculate_icisip, savefile=component_dir, IptoZero=set_ip_zero)
+    f = partial(calculate_icisip, savefile=component_dir, IptoZero=set_ip_zero, prior=np.array([prior]), prior_sig=np.array([prior_sig]))
     p.map(f, fn_list)
 
 
-def calculate_icisip(fn, savefile, IptoZero=False, save=True, name_ext=''):
+def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=None, prior_sig=None, name_ext=''):
     """
     Function to calculate Ic, Is, and Ip from an h5 file. Uses binfreeSSD
     :param fn: Filename of the observation for which you would like to find Ic, Is, and Ip
@@ -166,12 +169,15 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, name_ext=''):
         ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
         dt = ts[1:] - ts[:-1]
         dt = dt[np.where(dt < 1.e6)] / 10. ** 6
+        use_prior = [[prior[0][0][x, y] if np.any(prior[0][0]) else np.nan][0], np.nan, np.nan]
+        use_prior_sig = [[prior_sig[0][0][x, y] if np.any(prior_sig[0][0]) else np.nan][0], np.nan, np.nan]
         if len(dt) > 0:
             if not IptoZero:
-                model = optimize_IcIsIr(dt)
-                Ic, Is, Ip = model.params
+                model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig)
+                Ic, Is, Ip = model.x
+                # Ic, Is, Ip = model.params
             else:
-                model = optimize_IcIsIr2(dt, forceIp2zero=IptoZero)
+                model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig)
                 Ic, Is, Ip = model.x
             Ic_image[x][y] = Ic
             Is_image[x][y] = Is
