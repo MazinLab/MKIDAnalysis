@@ -169,8 +169,8 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=None, prior_
         ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
         dt = ts[1:] - ts[:-1]
         dt = dt[np.where(dt < 1.e6)] / 10. ** 6
-        use_prior = [[prior[0][0][x, y] if np.any(prior[0][0]) else np.nan][0], np.nan, np.nan]
-        use_prior_sig = [[prior_sig[0][0][x, y] if np.any(prior_sig[0][0]) else np.nan][0], np.nan, np.nan]
+        use_prior = [[prior[0][0][x, y] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
+        use_prior_sig = [[prior_sig[0][0][x, y] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0], np.nan, np.nan]
         if len(dt) > 0:
             if not IptoZero:
                 model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig)
@@ -248,7 +248,7 @@ def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
         return axes
 
 
-def plot_drizzle(file_path, plot_type='Intensity', axes=None):
+def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
     """
     plots and saves the result of the Drizzle algorithm
     https://github.com/spacetelescope/drizzle
@@ -285,7 +285,7 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None):
                     weight_arr[x][y] = 0
                 else:
                     weight_arr[x][y] = 1
-            cps = image/7.
+            cps = image/intt
             driz.add_image(cps, inwcs=image_wcs, in_units='cps', inwht=weight_arr)
         except ValueError:
             pass
