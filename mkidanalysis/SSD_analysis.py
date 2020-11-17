@@ -14,8 +14,8 @@ ssd.run_ssd()
 
 
 from mkidpipeline.speckle.binFreeRicianEstimate import *
-from DarknessPipeline.Examples.speckleStudy import lightCurves as lc
-import DarknessPipeline.Utils.pdfs as pdfs
+# from DarknessPipeline.Examples.speckleStudy import lightCurves as lc
+# import DarknessPipeline.Utils.pdfs as pdfs
 from matplotlib import gridspec
 from mkidcore.corelog import getLogger
 from progressbar import *
@@ -33,7 +33,7 @@ from mkidpipeline.imaging.drizzler import *
 
 class SSDAnalyzer:
     def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', ncpu=1, save_plot=False, prior=None,
-                 prior_sig=None, set_ip_zero=False, startw=850, stopw=1375):
+                 prior_sig=None, set_ip_zero=False, binned=False, startw=850, stopw=1375):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
@@ -43,8 +43,9 @@ class SSDAnalyzer:
         self.stopw = stopw
         self.set_ip_zero = set_ip_zero
         self.save_plot = save_plot
-        self.prior=prior
-        self.prior_sig=prior_sig
+        self.prior = prior
+        self.prior_sig = prior_sig
+        self.binned = binned
 
     def run_ssd(self):
         """
@@ -55,15 +56,20 @@ class SSDAnalyzer:
         """
         getLogger(__name__).info('Calculating Ic, Ip, and Is')
         calc_ic_is_ip(self.h5_dir, self.component_dir, ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig,
-                      set_ip_zero=self.set_ip_zero)
+                      set_ip_zero=self.set_ip_zero, binned=self.binned)
         getLogger(__name__).info('Initializing fits files')
         initialize_fits(self.h5_dir, self.fits_dir, startw=self.startw, stopw=self.stopw, ncpu=self.ncpu)
-        component_types = ['Ic/', 'Is/', 'Ip/']
-        for i, ct in enumerate(component_types):
-            update_fits(self.component_dir + ct, self.fits_dir)
+        if self.binned:
+            component_types = ['Ic/', 'Is/']
+            for i, ct in enumerate(component_types):
+                update_fits(self.component_dir + ct, self.fits_dir)
+        else:
+            component_types = ['Ic/', 'Is/', 'Ip/']
+            for i, ct in enumerate(component_types):
+                update_fits(self.component_dir + ct, self.fits_dir)
         if self.save_plot:
             getLogger(__name__).info('Creating and saving summary plot in {}'.format(self.plot_dir))
-            self.summary_plot()
+            self.summary_plot(binned=self.binned)
 
     def summary_plot(self):
         """
@@ -76,11 +82,18 @@ class SSDAnalyzer:
         for ax in axes_list:
             ax.set_xticklabels('')
             ax.set_yticklabels('')
-        component_types = ['Ic', 'Is', 'Ip']
-        for i, ct in enumerate(component_types):
-            quickstack(self.component_dir + ct + '/', axes=axes_list[i])
-        plot_drizzle(self.fits_dir, plot_type='Ip', axes=axes_list[3])
-        plot_drizzle(self.fits_dir, plot_type='Intensity', axes=axes_list[4])
+        if self.binned:
+            component_types = ['Ic', 'Is']
+            for i, ct in enumerate(component_types):
+                quickstack(self.component_dir + ct + '/', axes=axes_list[i])
+            plot_drizzle_binned(self.fits_dir, plot_type='Ic', axes=axes_list[3])
+            plot_drizzle_binned(self.fits_dir, plot_type='Is', axes=axes_list[4])
+        else:
+            component_types = ['Ic', 'Is', 'Ip']
+            for i, ct in enumerate(component_types):
+                quickstack(self.component_dir + ct + '/', axes=axes_list[i])
+            plot_drizzle(self.fits_dir, plot_type='Ip', axes=axes_list[3])
+            plot_drizzle(self.fits_dir, plot_type='Intensity', axes=axes_list[4])
         font = {'family': 'normal',
                 'weight': 'bold',
                 'size': 8}
@@ -122,11 +135,12 @@ def init_fits(fn, out_file_path, startw=850, stopw=1375):
     :return: None
     """
     obs = Photontable(fn)
-    hdu = obs.getFits(wvlStart=startw, wvlStop=stopw, applyWeight=True)
+    hdu = obs.getFits(wvlStart=startw, wvlStop=stopw, applyWeight=False)
     hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
+    getLogger(__name__).info('Initialized fits file for {}'.format(out_file_path + fn[-13:-3] + '.fits'))
 
 
-def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False):
+def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False):
     """
     wrapper for running binfreeSSD
     :param data_path: location of the h5 files to run SSD on
@@ -136,14 +150,20 @@ def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, 
     """
     fn_list = []
     for i, fn in enumerate(os.listdir(data_path)):
-        if fn.endswith('.h5'):
+        if fn.endswith('.h5') and fn.startswith('1'):
             fn_list.append(data_path + fn)
-    p = Pool(ncpu)
-    f = partial(calculate_icisip, savefile=component_dir, IptoZero=set_ip_zero, prior=np.array([prior]), prior_sig=np.array([prior_sig]))
-    p.map(f, fn_list)
+    if binned:
+        p = Pool(ncpu)
+        f = partial(calculate_icis_binned, save=True, savefile=component_dir)
+        p.map(f, fn_list)
+    else:
+        p = Pool(ncpu)
+        f = partial(calculate_icisip, savefile=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
+        p.map(f, fn_list)
 
 
-def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=None, prior_sig=None, name_ext=''):
+def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.nan, np.nan],
+                     prior_sig=[np.nan, np.nan, np.nan], name_ext=''):
     """
     Function to calculate Ic, Is, and Ip from an h5 file. Uses binfreeSSD
     :param fn: Filename of the observation for which you would like to find Ic, Is, and Ip
@@ -153,6 +173,7 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=None, prior_
     :param name_ext: name extension to add to the savefile
     :return: Ic, Is, and Ip images
     """
+
     obs = Photontable(fn)
     exclude_flags = pixelflags.PROBLEM_FLAGS
     Ic_image = np.zeros((140, 146))
@@ -163,22 +184,17 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=None, prior_
         return
     bar = ProgressBar(maxval=20439).start()
     bari = 0
-    for (x, y), resID in np.ndenumerate(obs.beamImage):
+    for (x, y), dt in np.ndenumerate(obs.beamImage):
         if obs.flagMask(exclude_flags, (x, y)) and any(exclude_flags):
             continue
-        ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
-        dt = ts[1:] - ts[:-1]
-        dt = dt[np.where(dt < 1.e6)] / 10. ** 6
+        ts = np.sort(obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time'])
+        dt = np.diff(ts)
+        dt = dt / 10. ** 6
         use_prior = [[prior[0][0][x, y] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
         use_prior_sig = [[prior_sig[0][0][x, y] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0], np.nan, np.nan]
         if len(dt) > 0:
-            if not IptoZero:
-                model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig)
-                Ic, Is, Ip = model.x
-                # Ic, Is, Ip = model.params
-            else:
-                model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig)
-                Ic, Is, Ip = model.x
+            model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig, forceIp2zero=IptoZero)
+            Ic, Is, Ip = model.x
             Ic_image[x][y] = Ic
             Is_image[x][y] = Is
             Ip_image[x][y] = Ip
@@ -265,13 +281,13 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
         if fn.endswith('.fits') and fn.startswith('1'):
             infiles.append(file_path + fn)
     ref_wcs = get_canvas_wcs()
-    driz = Drizzle(outwcs=ref_wcs, pixfrac=0.6)
-    for infile in infiles[:-4]:
+    driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
+    for i, infile in enumerate(infiles):
         try:
             imlist = fits.open(infile)
             if plot_type == 'Ip':
                 try:
-                    image = imlist[6].data
+                    image = imlist[-1].data
                 except IndexError:
                     getLogger(__name__).info('Fits files in {} have no Ic, Is, and Ip data attached'.format(file_path))
             else:
@@ -286,7 +302,57 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
                 else:
                     weight_arr[x][y] = 1
             cps = image/intt
-            driz.add_image(cps, inwcs=image_wcs, in_units='cps', inwht=weight_arr)
+            driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=30.0, wt_scl=weight_arr)
+            # driz.write('/mnt/data0/steiger/MEC/20200731/Hip5319/dither_2/SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
+        except ValueError:
+            pass
+    driz.write(file_path + plot_type + '_drizzle.fits')
+    ffile = fits.open(file_path + plot_type + '_drizzle.fits')
+    data_im = ffile[1].data
+    im = axes.imshow(data_im, vmin=0, vmax=1000, cmap='magma')
+    plt.colorbar(im, ax=axes)
+    axes.set_title(plot_type + ' drizzle', fontsize=10)
+    return axes
+
+
+def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, intt=25):
+    """
+
+    :param file_path:
+    :param plot_type:
+    :param axes:
+    :param intt:
+    :return:
+    """
+    infiles = []
+    for i, fn in enumerate(os.listdir(file_path)):
+        if fn.endswith('.fits') and fn.startswith('1'):
+            infiles.append(file_path + fn)
+    ref_wcs = get_canvas_wcs()
+    driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
+    for i, infile in enumerate(infiles):
+        try:
+            imlist = fits.open(infile)
+            if plot_type == 'Is':
+                try:
+                    image = imlist[-1].data
+                except IndexError:
+                    getLogger(__name__).info('Fits files in {} have no Ic and Is data attached'.format(file_path))
+            else:
+                # drizzle IC data
+                image = imlist[-2].data
+            image_wcs = WCS(imlist[1].header)
+            bad_mask = pixelflags.problem_flag_bitmask(flag_list=pixelflags.FLAG_LIST)
+            flags = imlist[3].data
+            weight_arr = np.zeros((140, 146))
+            for (x, y), flag in np.ndenumerate(flags):
+                if flags[x][y] & bad_mask != 0:
+                    weight_arr[x][y] = 0
+                else:
+                    weight_arr[x][y] = 1
+            cps = image/intt
+            driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=25.0, wt_scl=weight_arr)
+            # driz.write('/mnt/data0/steiger/MEC/20200731/Hip5319/dither_2/SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
         except ValueError:
             pass
     driz.write(file_path + plot_type + '_drizzle.fits')
@@ -301,7 +367,7 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
 def get_canvas_wcs():
     wcs = astropy.wcs.WCS(naxis = 2)
     wcs.wcs.crpix = np.array([500, 500])
-    wcs.wcs.crval = [290.89171916666663, 33.221966111111115]
+    wcs.wcs.crval = [332.54993865, 6.19786326]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
     wcs.pixel_shape = (1000, 1000)
     wcs.wcs.pc = np.array([[1,0],[0,1]])
@@ -357,11 +423,53 @@ def plot_ic_div_is(Ic, Is, axes=None):
     return axes
 
 
-def calculate_icis_binned(fn, save=True, savefile=''):
+def calculate_icis_binned_from_fits(fits_file, hdu_loc, x, y, savefile, exptime, save=True):
+    '''
+    Not tested
+    :param fits_file: location of the fits file to perform SSD on
+    :param hdu_loc: location of the image hdu within the its file - starts at 0 indexing
+    :param x: number of x pixels
+    :param y: number if y pixels
+    :param save: if true will save the arrays in savefile
+    :param savefile: location to save SSD products
+    :param exptime: length of exposures
+    :return: Ic, Is images
+    '''
+    hdu = fits.open(fits_file)
+    data = hdu[hdu_loc].data
+    # data should be a 1d array containing the binned intensity as a function of time, i.e. a lightcurve
+    Ic_image = np.zeros((x, y))
+    Is_image = np.zeros((x, y))
+    maxval = x * y
+    bar = ProgressBar(maxval=maxval).start()
+    bari = 0
+    for (x, y) in np.ndenumerate(data):
+        mu = np.mean(data)
+        var = np.var(data)
+        try:
+            IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, exptime)) * exptime
+        except:
+            # print('\nmuVar_to_IcIs failed\n')
+            IIc = mu / 2  # just create a reasonable seed
+            IIs = mu - IIc
+        Ic, Is, res = maxBinMRlogL(data[x, y], Ic_guess=IIc, Is_guess=IIs)
+        Ic_image[x][y] = Ic
+        Is_image[x][y] = Is
+        bari += 1
+        bar.update(bari)
+    bar.finish()
+    if save:
+        np.save(savefile + 'Ic_binned', Ic_image)
+        np.save(savefile + 'Is_binned', Is_image)
+    return Ic_image, Is_image
+    # assuming data is now an array with units of counts/bin in the shape (x_pix, y_pix)
+
+
+def calculate_icis_binned(fn, save=True, savefile='', name_ext=''):
     """
     function to run binned SSD
     :param fn: file on which to run SSD
-    :param save: if True will save the Ic and IS images using np.save()
+    :param save: if True will save the Ic and Is images using np.save()
     :param savefile: path where you would like the saved file to go - not used if save is False
     :return: Ic image, Is image
     """
@@ -369,6 +477,9 @@ def calculate_icis_binned(fn, save=True, savefile=''):
     exclude_flags = pixelflags.PROBLEM_FLAGS
     Ic_image = np.zeros((140, 146))
     Is_image = np.zeros((140, 146))
+    if os.path.exists(savefile + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
+        getLogger(__name__).info('Ic and Is already calculated for {}'.format(fn))
+        return
     bar = ProgressBar(maxval=20439).start()
     bari = 0
     for (x, y), resID in np.ndenumerate(obs.beamImage):
@@ -396,12 +507,18 @@ def calculate_icis_binned(fn, save=True, savefile=''):
         bar.update(bari)
     bar.finish()
     if save:
-        np.save(savefile + fn[-13:-1] + '_Ic_binned', Ic_image)
-        np.save(savefile + fn[-13:-1] + '_Is_binned', Is_image)
+        try:
+            np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
+            np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+        except FileNotFoundError:
+            os.mkdir(savefile + 'Ic/')
+            os.mkdir(savefile + 'Is/')
+            np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
+            np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
     return Ic_image, Is_image
 
 
-def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 150], axes=None, fit_poisson=False):
+def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], axes=None, fit_poisson=True):
     """
     for a given 3D data array will plot the count rate histograms and perform a modified rician fit
     :param data: 3D data array
@@ -438,7 +555,7 @@ def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 150], a
 
 
 def mr_hist_summary_plot(cube, object_location, field_location, box_size=2, N=40, Ic=None, Is=None, object_name='',
-                         save_dir=''):
+                         save_dir='', span=[0, 300]):
     """
     Plots an image of the data given by cube and also histograms of the counts contained in a box centered on
     object_location and field_location
@@ -451,6 +568,7 @@ def mr_hist_summary_plot(cube, object_location, field_location, box_size=2, N=40
     :param Is: 3D numpy array - If given will add a plot of Ic/Is to the plot
     :param object_name: name of the object for the plot title (str)
     :param save_dir: directory in which to save the plot
+    :param span:
     :return: None
     """
     x = object_location[0]
@@ -474,7 +592,7 @@ def mr_hist_summary_plot(cube, object_location, field_location, box_size=2, N=40
     cmap = plt.cm.viridis
     cmap.set_bad(color='r')
     try:
-        im = axes_list[3].imshow(np.sum(cube['cube'], axis=2), cmap=cmap, vmin=0, vmax=8000, interpolation='nearest')
+        im = axes_list[3].imshow(np.sum(cube['cube'], axis=2), cmap=cmap, vmin=0, vmax=3000, interpolation='nearest')
         object_intensities = np.sum(cube['cube'][xmin:xmax, ymin:ymax, :], axis=(0, 1))
         field_intensities = np.sum(cube['cube'][amin:amax, bmin:bmax, :], axis=(0, 1))
     except IndexError:
@@ -485,8 +603,8 @@ def mr_hist_summary_plot(cube, object_location, field_location, box_size=2, N=40
     plt.colorbar(im, ax=axes_list[3])
     axes_list[3].set_title('Total Intensity')
 
-    plot_intensity_histogram(object_intensities, object_name=object_name, axes=axes_list[0], N=N)
-    plot_intensity_histogram(field_intensities, object_name='Field', axes=axes_list[1], N=N)
+    plot_intensity_histogram(object_intensities, object_name=object_name, axes=axes_list[0], N=N, span=span)
+    plot_intensity_histogram(field_intensities, object_name='Field', axes=axes_list[1], N=N, span=span)
     if Ic and Is:
         plot_ic_div_is(Ic, Is, axes=axes_list[2])
     circ_obj = Circle((object_location[1], object_location[0]), box_size, fill=False, color='red')
