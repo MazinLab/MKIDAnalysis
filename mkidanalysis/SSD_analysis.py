@@ -7,7 +7,7 @@ Code to Perform SSD on MEC data
 Example Usage:
 
 ssd = SSDAnalyzer(h5_dir=h5_folder, fits_dir=save_folder + 'fits/', component_dir=save_folder, plot_dir=save_folder,
-                  ncpu=10, save_plot=True, set_ip_zero=False)
+                  ncpu=10, save_plot=True, set_ip_zero=False, binned=False)
 ssd.run_ssd()
 
 '''
@@ -32,8 +32,8 @@ from mkidpipeline.imaging.drizzler import *
 
 
 class SSDAnalyzer:
-    def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', ncpu=1, save_plot=False, prior=None,
-                 prior_sig=None, set_ip_zero=False, binned=False, startw=850, stopw=1375):
+    def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', target_name='',  ncpu=1, save_plot=False,
+                 prior=None, prior_sig=None, set_ip_zero=False, binned=False, startw=850, stopw=1375):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
@@ -46,6 +46,7 @@ class SSDAnalyzer:
         self.prior = prior
         self.prior_sig = prior_sig
         self.binned = binned
+        self.target_name = target_name
 
     def run_ssd(self):
         """
@@ -69,11 +70,13 @@ class SSDAnalyzer:
                 update_fits(self.component_dir + ct, self.fits_dir)
         if self.save_plot:
             getLogger(__name__).info('Creating and saving summary plot in {}'.format(self.plot_dir))
-            self.summary_plot(binned=self.binned)
+            self.summary_plot()
 
     def summary_plot(self):
         """
         saves a summary plot of stacked Ic, Is and Ip, a the drizzled Ip image and a total intensity drizzle
+
+        If binned= True will insetad save a drizzled Ic and a drizzled Is image
         """
         figure = plt.figure()
         gs = gridspec.GridSpec(3, 3)
@@ -86,14 +89,14 @@ class SSDAnalyzer:
             component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
                 quickstack(self.component_dir + ct + '/', axes=axes_list[i])
-            plot_drizzle_binned(self.fits_dir, plot_type='Ic', axes=axes_list[3])
-            plot_drizzle_binned(self.fits_dir, plot_type='Is', axes=axes_list[4])
+            plot_drizzle_binned(self.fits_dir, plot_type='Ic', axes=axes_list[3], target=self.target_name)
+            plot_drizzle_binned(self.fits_dir, plot_type='Is', axes=axes_list[4], target=self.target_name)
         else:
             component_types = ['Ic', 'Is', 'Ip']
             for i, ct in enumerate(component_types):
                 quickstack(self.component_dir + ct + '/', axes=axes_list[i])
-            plot_drizzle(self.fits_dir, plot_type='Ip', axes=axes_list[3])
-            plot_drizzle(self.fits_dir, plot_type='Intensity', axes=axes_list[4])
+            plot_drizzle(self.fits_dir, plot_type='Ip', axes=axes_list[3], target=self.target_name)
+            plot_drizzle(self.fits_dir, plot_type='Intensity', axes=axes_list[4], target=self.target_name)
         font = {'family': 'normal',
                 'weight': 'bold',
                 'size': 8}
@@ -264,7 +267,7 @@ def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
         return axes
 
 
-def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
+def plot_drizzle(file_path, plot_type='Intensity', axes=None, target='', intt=30):
     """
     plots and saves the result of the Drizzle algorithm
     https://github.com/spacetelescope/drizzle
@@ -280,7 +283,7 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
     for i, fn in enumerate(os.listdir(file_path)):
         if fn.endswith('.fits') and fn.startswith('1'):
             infiles.append(file_path + fn)
-    ref_wcs = get_canvas_wcs()
+    ref_wcs = get_canvas_wcs(target)
     driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
     for i, infile in enumerate(infiles):
         try:
@@ -315,20 +318,21 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, intt=30):
     return axes
 
 
-def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, intt=25):
+def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=25):
     """
-
-    :param file_path:
-    :param plot_type:
-    :param axes:
-    :param intt:
-    :return:
+    Drizzles either an Ic or Is image that has been appended to the end of a fits file. NOTE! This assumes that the Ic
+    image was appended first
+    :param file_path: location of the fits files to be drizzled
+    :param plot_type: 'Ic' or 'Is' - which image to drizzle
+    :param axes: Matplotlib axes object
+    :param intt: integration time of observation
+    :return: Matplotlib axes object
     """
     infiles = []
     for i, fn in enumerate(os.listdir(file_path)):
         if fn.endswith('.fits') and fn.startswith('1'):
             infiles.append(file_path + fn)
-    ref_wcs = get_canvas_wcs()
+    ref_wcs = get_canvas_wcs(target)
     driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
     for i, infile in enumerate(infiles):
         try:
@@ -364,10 +368,11 @@ def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, intt=25):
     return axes
 
 
-def get_canvas_wcs():
+def get_canvas_wcs(target):
+    coords = SkyCoord.from_name(target)
     wcs = astropy.wcs.WCS(naxis = 2)
     wcs.wcs.crpix = np.array([500, 500])
-    wcs.wcs.crval = [332.54993865, 6.19786326]
+    wcs.wcs.crval = [coords[0], coords[1]]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
     wcs.pixel_shape = (1000, 1000)
     wcs.wcs.pc = np.array([[1,0],[0,1]])
