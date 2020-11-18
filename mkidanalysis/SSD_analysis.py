@@ -372,7 +372,7 @@ def get_canvas_wcs(target):
     coords = SkyCoord.from_name(target)
     wcs = astropy.wcs.WCS(naxis = 2)
     wcs.wcs.crpix = np.array([500, 500])
-    wcs.wcs.crval = [coords[0], coords[1]]
+    wcs.wcs.crval = [coords.ra.value, coords.dec.value]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
     wcs.pixel_shape = (1000, 1000)
     wcs.wcs.pc = np.array([[1,0],[0,1]])
