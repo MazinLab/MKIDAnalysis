@@ -6,8 +6,19 @@ import os
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
-from mkidpipeline.hdf.photontable import ObsFile
 from mkidpipeline.badpix import hpm_flux_threshold
+from mkidpipeline.hdf.photontable import Photontable
+from photutils.detection import IRAFStarFinder
+from photutils.psf import IntegratedGaussianPRF, DAOGroup
+from photutils.background import MMMBackground, MADStdBackgroundRMS
+from astropy.modeling.fitting import LevMarLSQFitter
+from astropy.stats import gaussian_sigma_to_fwhm
+import scipy.ndimage as ndimage
+from astropy.table import Table
+import mkidcore.pixelflags as pixelflags
+import matplotlib.pyplot as plt
+from multiprocessing import Pool
+from functools import partial
 
 
 def precess_them_coordinates(obj_coords='23 40 24.5076320 +44 20 02.156595', coord_unit=(u.hourangle, u.deg), parallax=19.37,
@@ -195,6 +206,7 @@ def interpolate_image(image, method='linear'):
 
     return interpolated_frame
 
+
 def mask_hot_pixels_simple(file):
 
     obsfile = ObsFile(file)
@@ -209,3 +221,75 @@ def mask_hot_pixels_simple(file):
     obsfile.disablewrite()
 
     obsfile.file.close()
+
+
+def mask_satellite_spots(h5_file_path, delta=4):
+    for i, fn in enumerate(os.listdir(h5_file_path)):
+        if fn.endswith('.h5'):
+            pt = Photontable(h5_file_path + fn, mode='write')
+            flag_array=np.zeros((140, 146), dtype=bool)
+            if i == 0:
+                data = pt.getPixelCountImage()
+                plt.imshow(data['image'].T)
+                centers = np.asarray(plt.ginput(4))
+            for c in centers:
+                flag_array[int(c[0])-delta:int(c[0])+delta, int(c[1])-delta:int(c[1])+delta] = True
+            pt.flag(pixelflags.pixcal['hot']*flag_array)
+
+
+def mask_spots(data_path, delta=4, ncpu=10):
+    """
+    wrapper for running binfreeSSD
+    :param data_path: location of the h5 files to run SSD on
+    :param component_dir: directory to which you want the Ic, Is, and Ip data saved
+    :param ncpu: number of cpus to use for parallel processing
+    :return: None
+    """
+    fn_list = []
+    for i, fn in enumerate(os.listdir(data_path)):
+        if fn.endswith('.h5') and fn.startswith('1'):
+            fn_list.append(data_path + fn)
+    p = Pool(ncpu)
+    f = partial(mask_satellite_spots, fn_list, delta=delta)
+    p.map(f, fn_list)
+
+
+def psf_photometry(img, sigma_psf, x0=None, y0=None):
+    """
+    Function for performing PSF photometry using astropy modules
+
+    :param img: 2D array on which to perform photometry
+    :param sigma_psf: standard deviation of the fitted PSF
+    :param x0: x centroid location to fit PSF
+    :param y0: y centroid location to fit PSF, if x0 and y0 are None will find the brightest source in img and fit that
+    :return: x0, y0, and total flux
+    """
+    image = ndimage.gaussian_filter(img, sigma=3, order=0)
+    bkgrms = MADStdBackgroundRMS()
+    std = bkgrms(image)
+    iraffind = IRAFStarFinder(threshold=3.5 * std, fwhm=sigma_psf * gaussian_sigma_to_fwhm, minsep_fwhm=0.01,
+                              roundhi=5.0, roundlo=-5.0, sharplo=0.0, sharphi=2.0)
+    daogroup = DAOGroup(2.0 * sigma_psf * gaussian_sigma_to_fwhm)
+    mmm_bkg = MMMBackground()
+    fitter = LevMarLSQFitter()
+    psf_model = IntegratedGaussianPRF(sigma=sigma_psf)
+    if x0 and y0:
+        from photutils.psf import BasicPSFPhotometry
+        psf_model.x_0.fixed = True
+        psf_model.y_0.fixed = True
+        pos = Table(names=['x_0', 'y_0'], data=[x0, y0])
+        photometry = BasicPSFPhotometry(group_maker=daogroup,bkg_estimator=mmm_bkg, psf_model=psf_model,
+                                        fitter=LevMarLSQFitter(), fitshape=(11,11))
+        res = photometry(image=image, init_guesses=pos)
+        return res['x_0'], res['y_0'], res['flux_0']
+    from photutils.psf import IterativelySubtractedPSFPhotometry
+    photometry = IterativelySubtractedPSFPhotometry(finder=iraffind, group_maker=daogroup, bkg_estimator=mmm_bkg,
+                                                    psf_model=psf_model, fitter=fitter, niters=1, fitshape=(11, 11))
+    res = photometry(image=image)
+
+    idx = np.argsort(res['flux_0'])
+    sorted_x = res['x_0'][idx]
+    sorted_y = res['y_0'][idx]
+    sorted_flux = res['flux_0'][idx]
+
+    return sorted_x[:3], sorted_y[:3], sorted_flux[:3]
