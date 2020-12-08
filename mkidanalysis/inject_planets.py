@@ -18,10 +18,15 @@ import mkidpipeline.speckle.photonstats_utils as utils
 from astropy.convolution import AiryDisk2DKernel
 from multiprocessing import Pool
 from functools import partial
+import time
+from astropy.modeling.blackbody import BlackBody1D
+from astropy import units as u
+import scipy
+import random
 
 
 class InjectPlanet:
-    def __init__(self, h5_folder, target, sep, pa, cps, conex_ref=None, pixel_ref=None):
+    def __init__(self, h5_folder, target, sep, pa, cps, T=None, conex_ref=None, pixel_ref=None):
         self.h5_folder = h5_folder
         self.h5_files = []
         for i, fn in enumerate(os.listdir(self.h5_folder)):
@@ -41,25 +46,19 @@ class InjectPlanet:
         self.start_times = np.array(get_start_times(self.h5_folder))
         self.pa_list = get_pa_list(self.start_times, intt=self.intt, target=self.target)
         self.delta_pas = np.array([i - self.pa_list[0] for i in self.pa_list])
+        self.companion_photons = {}
+        self.T = T if T else None
 
     def run(self):
-        """
-        runs the planet injection code: puts fake ocmpanion photons into a sequence of h5 observation files
-        :return:
-        """
         for i, file in enumerate(self.h5_files):
             injected_photons = self.get_companion_photons(file)
-            h5file = tables.open_file(file, mode="a", title="MKID Photon File")
-            original_photons = h5file.root.Photons.PhotonTable.read()
-            table = h5file.root.Photons.PhotonTable
-            print('Removing exiting photons from table')
-            table.remove_rows(0, table.nrows)
-            print('combining existing and injected photons')
-            total_photons = np.concatenate([original_photons, injected_photons])
-            print('sorting photons on ResID then time')
-            total_photons.sort(order=('ResID', 'Time'))
-            table.append(total_photons)
-            h5file.close()
+            self.companion_photons.update({file: injected_photons})
+        self.run_parallel()
+
+    def run_parallel(self):
+        p = Pool(6)
+        f = partial(worker, photon_dict=self.companion_photons)
+        p.map(f, self.h5_files)
 
     def get_companion_photons(self, h5_file):
         """
@@ -117,11 +116,15 @@ class InjectPlanet:
             if companion_image[x, y] != 0:
                 counts = companion_image[x, y] * intt
                 t_prev = 0
+                if self.T:
+                    wavelengths = get_BB_dist_wvls(counts, self.T)
+                else:
+                    wavelengths = np.full(len(counts), 1100)
                 for i in range(counts):
                     # create a photon entry for each count with poisson distributed arrival times
                     pixel_cps = counts/intt
                     t = t_prev + np.random.poisson(10**6/pixel_cps)
-                    wvl = 1100
+                    wvl = wavelengths[i]
                     photons[tally + i] = (resID, t, wvl, 1.0, 1.0)
                     t_prev = t
                 tally += counts
@@ -147,7 +150,91 @@ class InjectPlanet:
         comp_ref_pix = (self.pixel_ref[0] + self.pix_sep*np.sin(apply_angle),
                         self.pixel_ref[1] + self.pix_sep*np.cos(apply_angle))
         x_cen, y_cen = comp_ref_pix + delta_pix_dith
+        print('file: {} injecting companion at location: {}'.format(fn, (x_cen, y_cen)))
         return int(x_cen), int(y_cen)
+
+
+def blackbody(lam, T):
+    """
+
+    :param lam:
+    :param T:
+    :return:
+    """
+    h = 6.626e-34
+    c = 3.0e+8
+    k = 1.38e-23
+    a = 2.0 * h * c ** 2
+    b = h * c / (lam * k * T)
+    intensity = a / ((lam ** 5) * (np.exp(b) - 1.0))
+    return intensity
+
+
+def normalize_bb(counts, T, lower, upper):
+    """
+
+    :param counts:
+    :param T:
+    :param lower:
+    :param upper:
+    :return:
+    """
+    norm = scipy.integrate.quad(blackbody, lower, upper, args=T)[0] / counts
+    return norm
+
+
+def get_BB_dist_wvls(counts, T):
+    """
+
+    :param counts:
+    :param T:
+    :return:
+    """
+    bins = np.arange(8e-7, 14e-7, 5e-8)
+    photons = np.zeros(len(bins) - 1)
+    # get number of photons for wavelength bin
+    norm = normalize_bb(counts, T, bins[0], bins[-1])
+    for i, entry in enumerate(photons):
+        photons[i] = scipy.integrate.quad(blackbody, bins[i], bins[i+1], args=T)[0]/norm
+    # for each bin randomly select num_phots number of random wavelenghts
+    wavelengths = []
+    use_photons = np.round(photons).astype(int)
+    if np.sum(use_photons) != counts:
+        to_add = np.abs(counts - np.sum(use_photons))
+        try:
+            location = np.argmax(photons[photons < 0.5])
+        except ValueError:
+            location = np.argmin(photons)
+        use_photons[location] += to_add
+    for i, num_phots in enumerate(use_photons):
+        range = np.arange(bins[i], bins[i+1], 1e-9)
+        wvl = np.random.choice(range, num_phots).flatten()
+        wavelengths.append(wvl*1e9)
+    return np.concatenate(wavelengths, axis=0)
+
+
+def worker(h5_file, photon_dict):
+    photons = photon_dict[h5_file]
+    inject_photons(h5_file, photons)
+
+
+def inject_photons(file, injected_photons):
+    """
+    runs the planet injection code: puts fake companion photons into a sequence of h5 observation files
+    :return:
+    """
+    h5file = tables.open_file(file, mode="a", title="MKID Photon File")
+    original_photons = h5file.root.Photons.PhotonTable.read()
+    table = h5file.root.Photons.PhotonTable
+    print('Removing existing photons from table')
+    table.remove_rows(0, table.nrows)
+    print('combining existing and injected photons')
+    total_photons = np.concatenate([original_photons, injected_photons])
+    print('sorting photons on ResID then time - this will take a bit')
+    total_photons.sort(order=('ResID', 'Time'))
+    table.append(total_photons)
+    print('done with {}'.format(file))
+    h5file.close()
 
 
 def dither_pixel_vector(pt, center):
@@ -233,7 +320,7 @@ def corrsequence(Ttot, tau):
     return t, r
 
 
-def generate_diffrac_lim_planet(diffrac_lim=2.68, max_counts=300, type='Gaussian'):
+def generate_diffrac_lim_planet(diffrac_lim=2.68, max_counts=150, type='Airy'):
     """
     generates a 2D cps image of a companon
     :param diffrac_lim: float diffraction limit
@@ -252,7 +339,11 @@ def generate_diffrac_lim_planet(diffrac_lim=2.68, max_counts=300, type='Gaussian
     return psf
 
 
-a = InjectPlanet(h5_folder='/mnt/data0/steiger/MEC/injected_companion_data/', target='Hip109427', sep=0.3, pa=90,
-                 cps=300, conex_ref=[0.5, -0.6], pixel_ref=[62, 36])
+
+t1 = time.time()
+a = InjectPlanet(h5_folder='/data/steiger/MEC/20201006/Hip109427/injected_companions/scrap/', target='Hip109427', T=3000, sep=0.2, pa=0,
+                 cps=200, conex_ref=[0.1, -0.4], pixel_ref=[89, 47])
 a.run()
-print('done!')
+# get_BB_dist_wvls(150, 3000)
+t2 = time.time()
+print('done! Planet injected in {} s'.format(t2-t1))
