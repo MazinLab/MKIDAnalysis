@@ -47,6 +47,11 @@ class SSDAnalyzer:
         self.prior_sig = prior_sig
         self.binned = binned
         self.target_name = target_name
+        self.h5_files = []
+        for i, fn in enumerate(os.listdir(h5_dir)):
+            if fn.endswith('.h5') and fn.startswith('1'):
+                self.h5_files.append(h5_dir + fn)
+        self.intt = Photontable(self.h5_files[0]).getFromHeader('expTime')
 
     def run_ssd(self):
         """
@@ -85,18 +90,21 @@ class SSDAnalyzer:
         for ax in axes_list:
             ax.set_xticklabels('')
             ax.set_yticklabels('')
-        if self.binned:
+        if self.binned or self.set_ip_zero:
             component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
                 quickstack(self.component_dir + ct + '/', axes=axes_list[i])
-            plot_drizzle_binned(self.fits_dir, plot_type='Ic', axes=axes_list[3], target=self.target_name)
-            plot_drizzle_binned(self.fits_dir, plot_type='Is', axes=axes_list[4], target=self.target_name)
+            plot_drizzle_binned(self.fits_dir, plot_type='Ic', axes=axes_list[3], target=self.target_name,
+                                intt=self.intt)
+            plot_drizzle_binned(self.fits_dir, plot_type='Is', axes=axes_list[4], target=self.target_name,
+                                intt=self.intt)
         else:
             component_types = ['Ic', 'Is', 'Ip']
             for i, ct in enumerate(component_types):
                 quickstack(self.component_dir + ct + '/', axes=axes_list[i])
-            plot_drizzle(self.fits_dir, plot_type='Ip', axes=axes_list[3], target=self.target_name)
-            plot_drizzle(self.fits_dir, plot_type='Intensity', axes=axes_list[4], target=self.target_name)
+            plot_drizzle(self.fits_dir, plot_type='Ip', axes=axes_list[3], target=self.target_name, intt=self.intt)
+            plot_drizzle(self.fits_dir, plot_type='Intensity', axes=axes_list[4], target=self.target_name,
+                         intt=self.intt)
         font = {'family': 'normal',
                 'weight': 'bold',
                 'size': 8}
@@ -208,14 +216,16 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.
         try:
             np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
             np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
-            np.save(savefile + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
+            if not IptoZero:
+                np.save(savefile + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
         except FileNotFoundError:
             os.mkdir(savefile + 'Ic/')
             os.mkdir(savefile + 'Is/')
             os.mkdir(savefile + 'Ip/')
             np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
             np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
-            np.save(savefile + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
+            if not IptoZero:
+                np.save(savefile + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
     return Ic_image, Is_image, Ip_image
 
 
@@ -305,7 +315,7 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, target='', intt=30
                 else:
                     weight_arr[x][y] = 1
             cps = image/intt
-            driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=30.0, wt_scl=weight_arr)
+            driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=intt, wt_scl=weight_arr)
             # driz.write('/mnt/data0/steiger/MEC/20200731/Hip5319/dither_2/SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
         except ValueError:
             pass
@@ -318,7 +328,7 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, target='', intt=30
     return axes
 
 
-def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=25):
+def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=15):
     """
     Drizzles either an Ic or Is image that has been appended to the end of a fits file. NOTE! This assumes that the Ic
     image was appended first
@@ -355,7 +365,7 @@ def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=25
                 else:
                     weight_arr[x][y] = 1
             cps = image/intt
-            driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=25.0, wt_scl=weight_arr)
+            driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=intt, wt_scl=weight_arr)
             # driz.write('/mnt/data0/steiger/MEC/20200731/Hip5319/dither_2/SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
         except ValueError:
             pass
@@ -369,14 +379,15 @@ def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=25
 
 
 def get_canvas_wcs(target):
+    npix=500
     coords = SkyCoord.from_name(target)
     wcs = astropy.wcs.WCS(naxis = 2)
-    wcs.wcs.crpix = np.array([500, 500])
+    wcs.wcs.crpix = np.array([npix/2., npix/2.])
     wcs.wcs.crval = [coords.ra.value, coords.dec.value]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
-    wcs.pixel_shape = (1000, 1000)
+    wcs.pixel_shape = (npix, npix)
     wcs.wcs.pc = np.array([[1,0],[0,1]])
-    wcs.wcs.cdelt = [2.8888888888888894e-06, 2.8888888888888894e-06]
+    wcs.wcs.cdelt = [2.8888888888888894e-06, 2.8888888888888894e-06] #corresponds to a 10.4 mas platescale
     wcs.wcs.cunit = ["deg", "deg"]
     getLogger(__name__).debug(wcs)
     return wcs
