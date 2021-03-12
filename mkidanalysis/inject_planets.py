@@ -320,7 +320,7 @@ def corrsequence(Ttot, tau):
     return t, r
 
 
-def generate_diffrac_lim_planet(diffrac_lim=2.68, max_counts=150, type='Airy'):
+def generate_diffrac_lim_planet(diffrac_lim=2.00, max_counts=150, type='Airy'):
     """
     generates a 2D cps image of a companon
     :param diffrac_lim: float diffraction limit
@@ -341,8 +341,8 @@ def generate_diffrac_lim_planet(diffrac_lim=2.68, max_counts=150, type='Airy'):
 
 
 t1 = time.time()
-a = InjectPlanet(h5_folder='/data/steiger/MEC/20201006/Hip109427/injected_companions/scrap/', target='Hip109427', T=3000, sep=0.2, pa=0,
-                 cps=200, conex_ref=[0.1, -0.4], pixel_ref=[89, 47])
+a = InjectPlanet(h5_folder='/data/steiger/MEC/20201006/Hip109427/injected_companions/broadband_300cps/', target='Hip109427', T=2000, sep=0.22, pa=0,
+                 cps=300, conex_ref=[0.1, -0.4], pixel_ref=[89, 47])
 a.run()
 # get_BB_dist_wvls(150, 3000)
 t2 = time.time()

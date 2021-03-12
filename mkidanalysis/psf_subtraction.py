@@ -1,13 +1,9 @@
-import matplotlib.pyplot as plt
 from astropy.io import fits
 from scipy.ndimage import rotate, zoom
 import argparse
 from mkidpipeline.imaging.drizzler import form
 import mkidpipeline
 from mkidpipeline.utils.plottingTools import plot_array as pa
-from mkidpipeline.config import config
-import mkidpipeline.imaging.drizzler as drizzler
-from mkidpipeline import badpix as bp
 import mkidpipeline as pipe
 from mkidanalysis.analysis_utils import *
 import vip_hci as vip
@@ -17,7 +13,6 @@ from astroplan import Observer
 import astropy
 import datetime
 import pytz
-import mkidcore.corelog as pipelinelog
 from vip_hci.preproc import cube_derotate, frame_rotate
 
 def rudimentaryPSF_subtract(ditherframe_file, PSF_file, target_info, npos=25, combination_mode='median'):

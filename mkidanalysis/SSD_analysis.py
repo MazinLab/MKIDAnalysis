@@ -29,11 +29,12 @@ import warnings
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
 from mkidpipeline.imaging.drizzler import *
-
+from mkidpipeline.imaging.drizzler import *
+import mkidpipeline as pipe
 
 class SSDAnalyzer:
     def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', target_name='',  ncpu=1, save_plot=False,
-                 prior=None, prior_sig=None, set_ip_zero=False, binned=False, startw=850, stopw=1375):
+                 prior=None, prior_sig=None, set_ip_zero=False, binned=False, drizzle = True, startw=850, stopw=1375):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
@@ -48,6 +49,7 @@ class SSDAnalyzer:
         self.binned = binned
         self.target_name = target_name
         self.h5_files = []
+        self.drizzle = drizzle
         for i, fn in enumerate(os.listdir(h5_dir)):
             if fn.endswith('.h5') and fn.startswith('1'):
                 self.h5_files.append(h5_dir + fn)
@@ -73,10 +75,21 @@ class SSDAnalyzer:
             component_types = ['Ic/', 'Is/', 'Ip/']
             for i, ct in enumerate(component_types):
                 update_fits(self.component_dir + ct, self.fits_dir)
-        if self.save_plot:
+        if self.drizzle:
             getLogger(__name__).info('Creating and saving summary plot in {}'.format(self.plot_dir))
+            self.save_drizzles()
+        if self.save_plot:
             self.summary_plot()
 
+
+    def save_drizzles(self):
+        if self.binned or self.set_ip_zero:
+            drizzle_binned(self.fits_dir, plot_type='Ic', target=self.target_name, intt=self.intt)
+            drizzle_binned(self.fits_dir, plot_type='Is', target=self.target_name, intt=self.intt)
+        else:
+            drizzle_binfree(self.fits_dir, plot_type='Ip', target=self.target_name, intt=self.intt)
+            drizzle_binfree(self.fits_dir, plot_type='Ic', target=self.target_name, intt=self.intt)
+            drizzle_binfree(self.fits_dir, plot_type='Is', target=self.target_name, intt=self.intt)
     def summary_plot(self):
         """
         saves a summary plot of stacked Ic, Is and Ip, a the drizzled Ip image and a total intensity drizzle
@@ -93,6 +106,7 @@ class SSDAnalyzer:
         if self.binned or self.set_ip_zero:
             component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
+                drizzle_from_h5(self.h5_dir, self.component_dir + ct + '/', target=self.target_name, intt=self.intt)
                 quickstack(self.component_dir + ct + '/', axes=axes_list[i])
             plot_drizzle_binned(self.fits_dir, plot_type='Ic', axes=axes_list[3], target=self.target_name,
                                 intt=self.intt)
@@ -198,9 +212,20 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.
     for (x, y), dt in np.ndenumerate(obs.beamImage):
         if obs.flagMask(exclude_flags, (x, y)) and any(exclude_flags):
             continue
-        ts = np.sort(obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time'])
-        dt = np.diff(ts)
-        dt = dt / 10. ** 6
+        ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
+        wvls = obs.getPixelPhotonList(xCoord=int(x), yCoord=int(y))['Wavelength']
+        sort_idxs = np.argsort(ts)
+        sort_ts = ts[sort_idxs]
+        sort_wvls = wvls[sort_idxs]
+        orig_dt = np.diff(sort_ts)
+        oob_idxs = np.where(np.logical_or(sort_wvls < 950, sort_wvls > 1375))[0]
+        oob_idxs = oob_idxs[:-2]
+        use_idxs = oob_idxs + 1
+        orig_dt[use_idxs] = 0
+        use_dt = orig_dt[orig_dt!=0]
+        dt = use_dt / 10. ** 6
+        if bari % 5000 ==0:
+            getLogger(__name__).info('{:.2f}% of photons used'.format((len(use_dt)/len(orig_dt))*100))
         use_prior = [[prior[0][0][x, y] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
         use_prior_sig = [[prior_sig[0][0][x, y] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0], np.nan, np.nan]
         if len(dt) > 0:
@@ -237,6 +262,7 @@ def update_fits(data_file_path, fits_file_path):
     :param fits_file_path: location of the fits files
     :return:
     """
+    getLogger(__name__).info('Adding SSD data to fits files')
     for i, fn in enumerate(os.listdir(data_file_path)):
         for j, fit in enumerate(os.listdir(fits_file_path)):
             if fn.endswith('.npy'):
@@ -244,6 +270,9 @@ def update_fits(data_file_path, fits_file_path):
                     if fit[0:-5] == fn[0:-4]:
                         try:
                             hdu = fits.open(fits_file_path + fit)
+                            # if len(hdu) > 7:
+                            #     getLogger(__name__).info('Data already appended to {}'.format(fit))
+                            #     pass
                             data = np.load(data_file_path + fn)
                             image = fits.ImageHDU(data)
                             hdu.append(image)
@@ -277,7 +306,7 @@ def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
         return axes
 
 
-def plot_drizzle(file_path, plot_type='Intensity', axes=None, target='', intt=30):
+def drizzle_binfree(file_path, plot_type='Intensity', target='', intt=25):
     """
     plots and saves the result of the Drizzle algorithm
     https://github.com/spacetelescope/drizzle
@@ -303,8 +332,18 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, target='', intt=30
                     image = imlist[-1].data
                 except IndexError:
                     getLogger(__name__).info('Fits files in {} have no Ic, Is, and Ip data attached'.format(file_path))
+            elif plot_type == 'Is':
+                try:
+                    image = imlist[-2].data
+                except IndexError:
+                    getLogger(__name__).info('Fits files in {} have no Ic, Is, and Ip data attached'.format(file_path))
+            elif plot_type == 'Ic':
+                try:
+                    image = imlist[-3].data
+                except IndexError:
+                    getLogger(__name__).info('Fits files in {} have no Ic, Is, and Ip data attached'.format(file_path))
             else:
-                image = imlist[1].data
+                image = imlist[-4].data
             image_wcs = WCS(imlist[1].header)
             bad_mask = pixelflags.problem_flag_bitmask(flag_list=pixelflags.FLAG_LIST)
             flags = imlist[3].data
@@ -316,19 +355,13 @@ def plot_drizzle(file_path, plot_type='Intensity', axes=None, target='', intt=30
                     weight_arr[x][y] = 1
             cps = image/intt
             driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=intt, wt_scl=weight_arr)
-            # driz.write('/mnt/data0/steiger/MEC/20200731/Hip5319/dither_2/SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
         except ValueError:
             pass
     driz.write(file_path + plot_type + '_drizzle.fits')
-    ffile = fits.open(file_path + plot_type + '_drizzle.fits')
-    data_im = ffile[1].data
-    im = axes.imshow(data_im, vmin=0, vmax=1000, cmap='magma')
-    plt.colorbar(im, ax=axes)
-    axes.set_title(plot_type + ' drizzle', fontsize=10)
-    return axes
+    return None
 
 
-def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=15):
+def drizzle_binned(file_path, plot_type='Ic', target='', intt=15):
     """
     Drizzles either an Ic or Is image that has been appended to the end of a fits file. NOTE! This assumes that the Ic
     image was appended first
@@ -342,6 +375,8 @@ def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=15
     for i, fn in enumerate(os.listdir(file_path)):
         if fn.endswith('.fits') and fn.startswith('1'):
             infiles.append(file_path + fn)
+    # ref_imlist = fits.open(infiles[0])
+    # ref_wcs = WCS(ref_imlist[1].header)
     ref_wcs = get_canvas_wcs(target)
     driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
     for i, infile in enumerate(infiles):
@@ -353,7 +388,6 @@ def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=15
                 except IndexError:
                     getLogger(__name__).info('Fits files in {} have no Ic and Is data attached'.format(file_path))
             else:
-                # drizzle IC data
                 image = imlist[-2].data
             image_wcs = WCS(imlist[1].header)
             bad_mask = pixelflags.problem_flag_bitmask(flag_list=pixelflags.FLAG_LIST)
@@ -366,28 +400,24 @@ def plot_drizzle_binned(file_path, plot_type='Ic', axes=None, target='', intt=15
                     weight_arr[x][y] = 1
             cps = image/intt
             driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=intt, wt_scl=weight_arr)
-            # driz.write('/mnt/data0/steiger/MEC/20200731/Hip5319/dither_2/SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
+            driz.write('/data/steiger/MEC/20200731/Hip109427/binned_SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
         except ValueError:
             pass
     driz.write(file_path + plot_type + '_drizzle.fits')
-    ffile = fits.open(file_path + plot_type + '_drizzle.fits')
-    data_im = ffile[1].data
-    im = axes.imshow(data_im, vmin=0, vmax=1000, cmap='magma')
-    plt.colorbar(im, ax=axes)
-    axes.set_title(plot_type + ' drizzle', fontsize=10)
-    return axes
+    return None
 
 
 def get_canvas_wcs(target):
-    npix=500
+    npixx=500
+    npixy=500
     coords = SkyCoord.from_name(target)
     wcs = astropy.wcs.WCS(naxis = 2)
-    wcs.wcs.crpix = np.array([npix/2., npix/2.])
-    wcs.wcs.crval = [coords.ra.value, coords.dec.value]
+    wcs.wcs.crpix = np.array([npixx/2., npixy/2.])
+    wcs.wcs.crval = [coords.ra.deg, coords.dec.deg]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
-    wcs.pixel_shape = (npix, npix)
+    wcs.pixel_shape = (npixx, npixy)
     wcs.wcs.pc = np.array([[1,0],[0,1]])
-    wcs.wcs.cdelt = [2.8888888888888894e-06, 2.8888888888888894e-06] #corresponds to a 10.4 mas platescale
+    wcs.wcs.cdelt = [2.889e-06, 2.889e-06] #corresponds to a 10.4 mas platescale
     wcs.wcs.cunit = ["deg", "deg"]
     getLogger(__name__).debug(wcs)
     return wcs
@@ -503,8 +533,8 @@ def calculate_icis_binned(fn, save=True, savefile='', name_ext=''):
             continue
         ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
         if len(ts) > 0:
-            effExpTime = 0.02
-            lightCurveIntensityCounts, lightCurveIntensity, lightCurveTimes = getLightCurve(ts/10**6)
+            effExpTime = 0.03
+            lightCurveIntensityCounts, lightCurveIntensity, lightCurveTimes = getLightCurve(ts/10**6, effExpTime=effExpTime)
             mu = np.mean(lightCurveIntensityCounts)
             var = np.var(lightCurveIntensityCounts)
             try:

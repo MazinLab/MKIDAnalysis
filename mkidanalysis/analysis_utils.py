@@ -1,12 +1,11 @@
 import numpy as np
-from scipy import ndimage
 from mkidcore.instruments import CONEX2PIXEL
 from scipy.interpolate import griddata
 import os
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy import units as u
-from mkidpipeline.badpix import hpm_flux_threshold
+from mkidpipeline.calibration.badpix import hpm_flux_threshold
 from mkidpipeline.hdf.photontable import Photontable
 from photutils.detection import IRAFStarFinder
 from photutils.psf import IntegratedGaussianPRF, DAOGroup

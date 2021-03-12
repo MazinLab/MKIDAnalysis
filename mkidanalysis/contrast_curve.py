@@ -1,17 +1,10 @@
-import glob
-import numpy as np
-
-from mkidpipeline import badpix as bp
+from mkidpipeline.calibration import badpix as bp
 from mkidpipeline.hdf.photontable import ObsFile as obs
 from mkidpipeline.utils.plottingTools import plot_array as pa
-from scipy.optimize import curve_fit
-import mkidcore.pixelflags as pixelflags
-from mkidcore.instruments import CONEX2PIXEL
 
 from scipy.ndimage.filters import median_filter
-import matplotlib.pyplot as plt
 
-from photutils import DAOStarFinder, centroids, centroid_2dg, centroid_1dg, centroid_com, CircularAperture, aperture_photometry
+from photutils import centroids, centroid_com, CircularAperture, aperture_photometry
 from astropy.modeling.models import AiryDisk2D
 from mkidanalysis.analysis_utils import *
 
