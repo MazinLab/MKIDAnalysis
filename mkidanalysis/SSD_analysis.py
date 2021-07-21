@@ -27,15 +27,21 @@ from astropy.io import fits
 import matplotlib
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
-
+from mkidpipeline.utils import pdfs
+from mkidanalysis.lightCurves import histogramLC
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
 
 
-PROBLEM_FLAGS = ()
+PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone', 'wavecal.bad',
+                 'wavecal.failed_validation', 'wavecal.failed_convergence', 'wavecal.not_monotonic',
+                 'wavecal.not_enough_histogram_fits', 'wavecal.no_histograms',
+                 'wavecal.not_attempted')
+
 class SSDAnalyzer:
+    """Class for running binned or binfree SSD analysis on MKID data (calibrated h5 files)"""
     def __init__(self, h5_dir='', fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
-                 binned=True, drizzle=True):
+                 binned=True, drizzle=True, bin_size=0.01):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
@@ -46,6 +52,7 @@ class SSDAnalyzer:
         self.binned = binned
         self.h5_files = []
         self.drizzle = drizzle
+        self.bin_size = bin_size
         for i, fn in enumerate(os.listdir(h5_dir)):
             if fn.endswith('.h5') and fn.startswith('1'):
                 self.h5_files.append(h5_dir + fn)
@@ -56,27 +63,28 @@ class SSDAnalyzer:
         """
         runs the SSD code on every h5 file in the h5_dir. Creates fits files which are saved in the fits_dir
         and adds the Ic, Is, and Ip images onto the end of the fits file.
-        Also creates and saves a summary plot of the stacked Ic, Is and Ip images as well as a drizzled Ip image and
-        drizzled total intensity image in plot_dir if save_plot=True
+
+        Also saves a drizzled Ic, Is, and Ip image in the fits_dir if drizzle=True.
         """
         getLogger(__name__).info('Calculating Ic, Ip, and Is')
-        calc_ic_is_ip(self.h5_dir, self.component_dir, ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig,
-                      set_ip_zero=self.set_ip_zero, binned=self.binned)
+        calculate_components(self.h5_dir, self.component_dir, ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig,
+                      set_ip_zero=self.set_ip_zero, binned=self.binned, bin_size=self.bin_size)
         getLogger(__name__).info('Initializing fits files')
         initialize_fits(self.h5_dir, self.fits_dir, ncpu=self.ncpu)
         if self.binned:
-            component_types = ['Ic/', 'Is/']
+            component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
-                update_fits(self.component_dir + ct, self.fits_dir)
+                update_fits(self.component_dir + '/' + ct, self.fits_dir, ext=ct)
         else:
-            component_types = ['Ic/', 'Is/', 'Ip/']
+            component_types = ['Ic', 'Is', 'Ip']
             for i, ct in enumerate(component_types):
-                update_fits(self.component_dir + ct, self.fits_dir)
+                update_fits(self.component_dir + '/' + ct, self.fits_dir, ext=ct)
         if self.drizzle:
             getLogger(__name__).info(f'Creating and saving component drizzles in {self.fits_dir}')
             self.save_drizzles()
 
     def save_drizzles(self):
+        """wrapper for drizzle_components"""
         if self.binned or self.set_ip_zero:
             components = ['Ic', 'Is']
         else:
@@ -86,8 +94,13 @@ class SSDAnalyzer:
 
     def drizzle_components(self, plot_type='Ic'):
         """
-        plots and saves the result of the Drizzle algorithm
+        plots and saves the result of running each of the Ic, Is, (and Ip if relevant) frames through the Drizzle
+        algorithm. Files are saved in a fits file format in self.fits_dir
+
         https://github.com/spacetelescope/drizzle
+
+        :param plot_type: component type to drizzle - 'Ic', 'Is', or 'Ip'
+        :return: None
         """
         infiles = []
         for i, fn in enumerate(os.listdir(self.fits_dir)):
@@ -114,10 +127,11 @@ class SSDAnalyzer:
         driz.write(self.fits_dir + plot_type + '_drizzle.fits')
         return None
 
+
 def initialize_fits(in_file_path, out_file_path, ncpu=1):
     """
     wrapper function for running multiprocessing with init_fits
-    :param in_file_path: location fo the inpput h5 files
+    :param in_file_path: location fo the input h5 files
     :param out_file_path: location to save the output fits files to
     :param ncpu: number of cores to ue for multiprocessing
     :return: None
@@ -136,11 +150,9 @@ def initialize_fits(in_file_path, out_file_path, ncpu=1):
 
 def init_fits(fn, out_file_path):
     """
-    creates a fits file from h5 file, fn.
+    creates a fits file from h5 file, fn by calling Photontable.get_fits().
     :param fn: h5 file to make a fits file from
     :param out_file_path: directory to save the fits file to
-    :param startw: start wavelength (nm)
-    :param stopw: stop wavelength (nm)
     :return: None
     """
     pt = Photontable(fn)
@@ -149,12 +161,19 @@ def init_fits(fn, out_file_path):
     getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
 
 
-def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False):
+def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False,
+                  bin_size=0.01):
     """
-    wrapper for running binfreeSSD
-    :param data_path: location of the h5 files to run SSD on
-    :param component_dir: directory to which you want the Ic, Is, and Ip data saved
-    :param ncpu: number of cpus to use for parallel processing
+    wrapper for running the binned or binfree SSD code
+
+    :param data_path: location of the h5 files
+    :param component_dir: location to save the component .npy files
+    :param ncpu: number of cpus to use
+    :param prior: prior for the binfree SSD analysis - defaults to np.nan for all values
+    :param prior_sig: std of the prior for the binfree SSD analysis - defaults to np.nan for all values
+    :param set_ip_zero: if binned=False and True will run the binfree SSD enforcinf Ip to 0. Ignored if binned=True
+    :param binned: If True will run binned SSD otherwise will run binfree SSD
+    :param bin_size: Size of time bins for binned SSD analysis. Ignored if binned=False
     :return: None
     """
     fn_list = []
@@ -163,26 +182,30 @@ def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, 
             fn_list.append(data_path + fn)
     if binned:
         p = Pool(ncpu)
-        f = partial(calculate_ic_is_binned, save=True, savefile=component_dir)
+        f = partial(binned_ssd, save=True, savefile=component_dir, bin_size=bin_size)
         p.map(f, fn_list)
     else:
         p = Pool(ncpu)
-        f = partial(calculate_ic_is_ip, savefile=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
+        f = partial(binfree_ssd, savefile=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
         p.map(f, fn_list)
 
 
-def calculate_ic_is_binned(fn, save=True, savefile='', name_ext='', bin_size=0.01):
+def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01):
     """
-    function to run binned SSD
-    :param fn: file on which to run SSD
-    :param save: if True will save the Ic and Is images using np.save()
-    :param savefile: path where you would like the saved file to go - not used if save is False
-    :return: Ic image, Is image
+    function for running binned SSD
+
+    :param fn: file to run binned SSD on
+    :param save: if True will save the result as a .npy file to save_dir. The name of the file will correspond to the
+    UNIX timestamp name given to the h5 file.
+    :param save_dir: directory where to save the Ic and Is .npy arrays
+    :param name_ext: optional name extension to apply to the end of the file to be used as an identifier
+    :param bin_size: time bin size for the SSD (seconds)
+    :return: Ic and Is images
     """
     pt = Photontable(fn)
     Ic_image = np.zeros((140, 146))
     Is_image = np.zeros((140, 146))
-    if os.path.exists(savefile + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
+    if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
         getLogger(__name__).info('Ic and Is already calculated for {}'.format(fn))
         return
     bar = ProgressBar(maxval=20439).start()
@@ -209,19 +232,28 @@ def calculate_ic_is_binned(fn, save=True, savefile='', name_ext='', bin_size=0.0
     bar.finish()
     if save:
         try:
-            np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
-            np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
+            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image)
         except FileNotFoundError:
-            os.mkdir(savefile + 'Ic/')
-            os.mkdir(savefile + 'Is/')
-            np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
-            np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+            os.mkdir(save_dir + 'Ic/')
+            os.mkdir(save_dir + 'Is/')
+            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
+            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image)
     return Ic_image, Is_image
 
 
-def calculate_ic_is_ip(fn, savefile, IptoZero=False, save=True, prior=None, prior_sig=None, name_ext=''):
+def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext=''):
     """
-    Function to calculate Ic, Is, and Ip from an h5 file. Uses binfreeSSD
+    Runs the binfree SSD
+    :param fn: file to run binned SSD on
+    :param save: if True will save the result as a .npy file to save_dir. The name of the file will correspond to the
+    UNIX timestamp name given to the h5 file.
+    :param save_dir: directory where to save the Ic and Is and Ip (if desired) .npy arrays
+    :param IptoZero: If True will set Ip to 0 for the determination of Ic and Is
+    :param prior: prior for the SSD analysis - defaults to np.nan for all values
+    :param prior_sig: std of the prior for the SSD analysis - defaults to np.nan for all values
+    :param name_ext: optional name extension to apply to the end of the file to be used as an identifier
+    :return: Ic, Is and Ip images
     """
     if prior is None:
         prior = [np.nan, np.nan, np.nan]
@@ -230,7 +262,7 @@ def calculate_ic_is_ip(fn, savefile, IptoZero=False, save=True, prior=None, prio
     Ic_image = np.zeros((140, 146))
     Is_image = np.zeros((140, 146))
     Ip_image = np.zeros((140, 146))
-    if os.path.exists(savefile + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
+    if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
         getLogger(__name__).info('Ic, Is, and Ip already calculated for {}'.format(fn))
         return
     bar = ProgressBar(maxval=20439).start()
@@ -251,15 +283,15 @@ def calculate_ic_is_ip(fn, savefile, IptoZero=False, save=True, prior=None, prio
         bar.update(bari)
     bar.finish()
     if save:
-        if not os.path.isfile(savefile + 'Ic/'):
-            os.mkdir(savefile + 'Ic/')
-            os.mkdir(savefile + 'Is/')
+        if not os.path.isfile(save_dir + 'Ic/'):
+            os.mkdir(save_dir + 'Ic/')
+            os.mkdir(save_dir + 'Is/')
             if not IptoZero:
-                os.mkdir(savefile + 'Ip/')
-        np.save(savefile + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
-        np.save(savefile + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+                os.mkdir(save_dir + 'Ip/')
+        np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
+        np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image)
         if not IptoZero:
-            np.save(savefile + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
+            np.save(save_dir + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
     return Ic_image, Is_image, Ip_image
 
 
@@ -269,6 +301,7 @@ def update_fits(data_file_path, fits_file_path, ext='UNKNOWN'):
     in fits_file_path
     :param data_file_path: location of the .npy arrays
     :param fits_file_path: location of the fits files
+    :param ext: EXTNAME of HDU to be added to the header of the HDU where the data is being added
     :return:
     """
     getLogger(__name__).info('Adding SSD data to fits files')
@@ -331,14 +364,14 @@ def get_canvas_wcs(target):
 
 
 def plot_icisip(fn, Ic, Is, Ip):
-    '''
+    """
     Easy plotting function to compare Ic, Ip and Is
     :param fn: File path to save the finished plot to
     :param Ic: 2D array of Ic
     :param Is: 2D array of Ic
     :param Ip: 2D array of Ic
     :return:
-    '''
+    """
     fig, axes = plt.subplots(2, 2)
     im1 = axes[0][0].imshow(Ic, vmin=0, vmax=30)
     axes[0][0].set_title('Ic')
@@ -386,7 +419,7 @@ def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], a
     :return: matplotlib Axes object
     """
 
-    histS_o, binsS_o = lc.histogramLC(data, centers=True, N=N, span=span)
+    histS_o, binsS_o = histogramLC(data, centers=True, N=N, span=span)
     histS = histS_o[1:]
     binsS = binsS_o[1:]
     guessIc = np.mean(data) * 2

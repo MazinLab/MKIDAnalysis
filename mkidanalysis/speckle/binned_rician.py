@@ -16,21 +16,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from scipy.optimize import curve_fit
-
-from mkidpipeline.speckle.generate_photons import genphotonlist
 from mpmath import mp, hyp1f1
 import mpmath
 from scipy import special
-from scipy.special import eval_laguerre, eval_genlaguerre, factorial
+from scipy.special import eval_laguerre, eval_genlaguerre
 from scipy import optimize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.stats import poisson
-#import mkidpipeline.speckle.optimize_IcIsIr as binfree
 import mkidpipeline.speckle.oracle_speckle_functions as binfree
 import multiprocessing
-
-import time
-
 
 
 def getLightCurve(photonTimeStamps, startTime=None, stopTime=None, effExpTime=.01):
