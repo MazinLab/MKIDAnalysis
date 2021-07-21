@@ -1,8 +1,5 @@
 '''
-Author: Alex Walter and Clint Bockstiegel - adapted for the MKIDPipeline by Sarah Steiger
-Date: February 2020
-
-Code to Perform SSD on MEC data
+Code to Perform Stochastic Speckle Discrimination (SSD) on MEC data
 
 Example Usage:
 
@@ -12,36 +9,36 @@ ssd.run_ssd()
 
 '''
 
-
-from mkidpipeline.speckle.binFreeRicianEstimate import *
-# from DarknessPipeline.Examples.speckleStudy import lightCurves as lc
-# import DarknessPipeline.Utils.pdfs as pdfs
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from mkidanalysis.speckle.binned_rician import muVar_to_IcIs, maxBinMRlogL, getLightCurve
+from mkidanalysis.speckle.binfree_rician import optimize_IcIsIr2
 from matplotlib import gridspec
 from mkidcore.corelog import getLogger
-from progressbar import *
+from progressbar import ProgressBar
 from matplotlib.patches import Circle
-from mkidpipeline.speckle.binned_rician import *
 from multiprocessing import Pool
 from functools import partial
 from astropy.wcs import WCS
 from drizzle.drizzle import Drizzle
 import warnings
+from mkidpipeline.photontable import Photontable
+from astropy.io import fits
+import matplotlib
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
-from mkidpipeline.imaging.drizzler import *
-from mkidpipeline.imaging.drizzler import *
-import mkidpipeline as pipe
 
+
+PROBLEM_FLAGS = ()
 class SSDAnalyzer:
     def __init__(self, h5_dir='', fits_dir='', component_dir='', plot_dir='', target_name='',  ncpu=1, save_plot=False,
-                 prior=None, prior_sig=None, set_ip_zero=False, binned=False, drizzle = True, startw=850, stopw=1375):
+                 prior=None, prior_sig=None, set_ip_zero=False, binned=False, drizzle = True):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
         self.plot_dir = plot_dir
         self.ncpu = ncpu
-        self.startw = startw
-        self.stopw = stopw
         self.set_ip_zero = set_ip_zero
         self.save_plot = save_plot
         self.prior = prior
@@ -53,7 +50,7 @@ class SSDAnalyzer:
         for i, fn in enumerate(os.listdir(h5_dir)):
             if fn.endswith('.h5') and fn.startswith('1'):
                 self.h5_files.append(h5_dir + fn)
-        self.intt = Photontable(self.h5_files[0]).getFromHeader('expTime')
+        self.intt = Photontable(self.h5_files[0]).query_header('EXPTIME')
 
     def run_ssd(self):
         """
@@ -81,7 +78,6 @@ class SSDAnalyzer:
         if self.save_plot:
             self.summary_plot()
 
-
     def save_drizzles(self):
         if self.binned or self.set_ip_zero:
             drizzle_binned(self.fits_dir, plot_type='Ic', target=self.target_name, intt=self.intt)
@@ -90,6 +86,7 @@ class SSDAnalyzer:
             drizzle_binfree(self.fits_dir, plot_type='Ip', target=self.target_name, intt=self.intt)
             drizzle_binfree(self.fits_dir, plot_type='Ic', target=self.target_name, intt=self.intt)
             drizzle_binfree(self.fits_dir, plot_type='Is', target=self.target_name, intt=self.intt)
+
     def summary_plot(self):
         """
         saves a summary plot of stacked Ic, Is and Ip, a the drizzled Ip image and a total intensity drizzle
@@ -127,13 +124,11 @@ class SSDAnalyzer:
         plt.savefig(self.plot_dir + 'summary_plot.pdf')
 
 
-def initialize_fits(in_file_path, out_file_path, startw=850, stopw=1375, ncpu=1):
+def initialize_fits(in_file_path, out_file_path, ncpu=1):
     """
     wrapper function for running multiprocessing with init_fits
     :param in_file_path: location fo the inpput h5 files
     :param out_file_path: location to save the output fits files to
-    :param startw: start wavelength (nm)
-    :param stopw: stop wavelength (nm)
     :param ncpu: number of cores to ue for multiprocessing
     :return: None
     """
@@ -146,11 +141,11 @@ def initialize_fits(in_file_path, out_file_path, startw=850, stopw=1375, ncpu=1)
         if fn.endswith('.h5') and not os.path.exists(out_file_path + fn[0:-3] + '.fits'):
             fn_list.append(in_file_path + fn)
     p = Pool(ncpu)
-    f = partial(init_fits, out_file_path=out_file_path, startw=startw, stopw=stopw)
+    f = partial(init_fits, out_file_path=out_file_path)
     p.map(f, fn_list)
 
 
-def init_fits(fn, out_file_path, startw=850, stopw=1375):
+def init_fits(fn, out_file_path):
     """
     creates a fits file from h5 file, fn.
     :param fn: h5 file to make a fits file from
@@ -159,8 +154,8 @@ def init_fits(fn, out_file_path, startw=850, stopw=1375):
     :param stopw: stop wavelength (nm)
     :return: None
     """
-    obs = Photontable(fn)
-    hdu = obs.getFits(wvlStart=startw, wvlStop=stopw, applyWeight=False)
+    pt = Photontable(fn)
+    hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS)
     hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
     getLogger(__name__).info('Initialized fits file for {}'.format(out_file_path + fn[-13:-3] + '.fits'))
 
@@ -179,15 +174,15 @@ def calc_ic_is_ip(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, 
             fn_list.append(data_path + fn)
     if binned:
         p = Pool(ncpu)
-        f = partial(calculate_icis_binned, save=True, savefile=component_dir)
+        f = partial(calculate_ic_is_binned, save=True, savefile=component_dir)
         p.map(f, fn_list)
     else:
         p = Pool(ncpu)
-        f = partial(calculate_icisip, savefile=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
+        f = partial(calculate_ic_is_ip, savefile=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
         p.map(f, fn_list)
 
 
-def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.nan, np.nan],
+def calculate_ic_is_ip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.nan, np.nan],
                      prior_sig=[np.nan, np.nan, np.nan], name_ext=''):
     """
     Function to calculate Ic, Is, and Ip from an h5 file. Uses binfreeSSD
@@ -199,8 +194,7 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.
     :return: Ic, Is, and Ip images
     """
 
-    obs = Photontable(fn)
-    exclude_flags = pixelflags.PROBLEM_FLAGS
+    pt = Photontable(fn)
     Ic_image = np.zeros((140, 146))
     Is_image = np.zeros((140, 146))
     Ip_image = np.zeros((140, 146))
@@ -209,31 +203,18 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.
         return
     bar = ProgressBar(maxval=20439).start()
     bari = 0
-    for (x, y), dt in np.ndenumerate(obs.beamImage):
-        if obs.flagMask(exclude_flags, (x, y)) and any(exclude_flags):
-            continue
-        ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
-        wvls = obs.getPixelPhotonList(xCoord=int(x), yCoord=int(y))['Wavelength']
-        sort_idxs = np.argsort(ts)
-        sort_ts = ts[sort_idxs]
-        sort_wvls = wvls[sort_idxs]
-        orig_dt = np.diff(sort_ts)
-        oob_idxs = np.where(np.logical_or(sort_wvls < 950, sort_wvls > 1375))[0]
-        oob_idxs = oob_idxs[:-2]
-        use_idxs = oob_idxs + 1
-        orig_dt[use_idxs] = 0
-        use_dt = orig_dt[orig_dt!=0]
-        dt = use_dt / 10. ** 6
-        if bari % 5000 ==0:
-            getLogger(__name__).info('{:.2f}% of photons used'.format((len(use_dt)/len(orig_dt))*100))
-        use_prior = [[prior[0][0][x, y] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
-        use_prior_sig = [[prior_sig[0][0][x, y] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0], np.nan, np.nan]
+    for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
+        ts = pt.query(pixel=pix, column='Time')
+        ts = np.sort(ts)
+        dt = np.diff(ts) / 10e6
+        use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
+        use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0], np.nan, np.nan]
         if len(dt) > 0:
             model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig, forceIp2zero=IptoZero)
             Ic, Is, Ip = model.x
-            Ic_image[x][y] = Ic
-            Is_image[x][y] = Is
-            Ip_image[x][y] = Ip
+            Ic_image[pix[0]][pix[1]] = Ic
+            Is_image[pix[0]][pix[1]] = Is
+            Ip_image[pix[0]][pix[1]] = Ip
         bari += 1
         bar.update(bari)
     bar.finish()
@@ -254,7 +235,7 @@ def calculate_icisip(fn, savefile, IptoZero=False, save=True, prior=[np.nan, np.
     return Ic_image, Is_image, Ip_image
 
 
-def update_fits(data_file_path, fits_file_path):
+def update_fits(data_file_path, fits_file_path, ext='UNKNOWN'):
     """
     takes a series of 3D .npy arrays in data_file_path and appends them to the end of the appropriate fits file
     in fits_file_path
@@ -269,14 +250,13 @@ def update_fits(data_file_path, fits_file_path):
                 if fit.endswith('.fits'):
                     if fit[0:-5] == fn[0:-4]:
                         try:
-                            hdu = fits.open(fits_file_path + fit)
                             # if len(hdu) > 7:
                             #     getLogger(__name__).info('Data already appended to {}'.format(fit))
                             #     pass
                             data = np.load(data_file_path + fn)
-                            image = fits.ImageHDU(data)
-                            hdu.append(image)
-                            hdu.writeto(fits_file_path + fit, overwrite=True)
+                            hdr = fits.Header()
+                            hdr['EXTNAME'] = ext
+                            fits.append(fits_file_path + fit, data, hdr)
                         except OSError:
                             getLogger(__name__).info('Error trying to append ImageHdu {}'.format(fn[0:-4]))
                             pass
@@ -361,7 +341,7 @@ def drizzle_binfree(file_path, plot_type='Intensity', target='', intt=25):
     return None
 
 
-def drizzle_binned(file_path, plot_type='Ic', target='', intt=15):
+def drizzle_binned(file_path, plot_type='Ic', target='', intt=None):
     """
     Drizzles either an Ic or Is image that has been appended to the end of a fits file. NOTE! This assumes that the Ic
     image was appended first
@@ -378,7 +358,7 @@ def drizzle_binned(file_path, plot_type='Ic', target='', intt=15):
     # ref_imlist = fits.open(infiles[0])
     # ref_wcs = WCS(ref_imlist[1].header)
     ref_wcs = get_canvas_wcs(target)
-    driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
+    driz = Drizzle(outwcs=ref_wcs)
     for i, infile in enumerate(infiles):
         try:
             imlist = fits.open(infile)
@@ -398,9 +378,9 @@ def drizzle_binned(file_path, plot_type='Ic', target='', intt=15):
                     weight_arr[x][y] = 0
                 else:
                     weight_arr[x][y] = 1
-            cps = image/intt
+            cps = image
             driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=intt, wt_scl=weight_arr)
-            driz.write('/data/steiger/MEC/20200731/Hip109427/binned_SSD/fits/' + 'drizzler_step_' + str(i).zfill(3) + '.fits')
+            driz.write(file_path + plot_type + 'drizzler_step_' + str(i).zfill(3) + '.fits')
         except ValueError:
             pass
     driz.write(file_path + plot_type + '_drizzle.fits')
@@ -469,7 +449,7 @@ def plot_ic_div_is(Ic, Is, axes=None):
     return axes
 
 
-def calculate_icis_binned_from_fits(fits_file, hdu_loc, x, y, savefile, exptime, save=True):
+def calculate_ic_is_binned_from_fits(fits_file, hdu_loc, x, y, savefile, exptime, save=True):
     '''
     Not tested
     :param fits_file: location of the fits file to perform SSD on
@@ -511,7 +491,7 @@ def calculate_icis_binned_from_fits(fits_file, hdu_loc, x, y, savefile, exptime,
     # assuming data is now an array with units of counts/bin in the shape (x_pix, y_pix)
 
 
-def calculate_icis_binned(fn, save=True, savefile='', name_ext=''):
+def calculate_ic_is_binned(fn, save=True, savefile='', name_ext='', bin_size=0.01):
     """
     function to run binned SSD
     :param fn: file on which to run SSD
@@ -519,8 +499,7 @@ def calculate_icis_binned(fn, save=True, savefile='', name_ext=''):
     :param savefile: path where you would like the saved file to go - not used if save is False
     :return: Ic image, Is image
     """
-    obs = Photontable(fn)
-    exclude_flags = pixelflags.PROBLEM_FLAGS
+    pt = Photontable(fn)
     Ic_image = np.zeros((140, 146))
     Is_image = np.zeros((140, 146))
     if os.path.exists(savefile + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
@@ -528,27 +507,23 @@ def calculate_icis_binned(fn, save=True, savefile='', name_ext=''):
         return
     bar = ProgressBar(maxval=20439).start()
     bari = 0
-    for (x, y), resID in np.ndenumerate(obs.beamImage):
-        if obs.flagMask(exclude_flags, (x, y)) and any(exclude_flags):
-            continue
-        ts = obs.getPixelPhotonList(xCoord=x, yCoord=y)['Time']
+    for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
+        ts = pt.query(pixel=pix, column='Time')
         if len(ts) > 0:
-            effExpTime = 0.03
-            lightCurveIntensityCounts, lightCurveIntensity, lightCurveTimes = getLightCurve(ts/10**6, effExpTime=effExpTime)
-            mu = np.mean(lightCurveIntensityCounts)
-            var = np.var(lightCurveIntensityCounts)
+            lc_counts, lc_intensity, lc_times = getLightCurve(ts/10**6, effExpTime=bin_size)
+            mu = np.mean(lc_counts)
+            var = np.var(lc_counts)
             try:
-                IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, effExpTime)) * effExpTime
-            except:
-                # print('\nmuVar_to_IcIs failed\n')
+                IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, bin_size)) * bin_size
+            except ValueError:
                 IIc = mu / 2  # just create a reasonable seed
                 IIs = mu - IIc
-            Ic, Is, res = maxBinMRlogL(lightCurveIntensityCounts, Ic_guess=IIc, Is_guess=IIs)
-            Ic_image[x][y] = Ic
-            Is_image[x][y] = Is
+            Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs)
+            Ic_image[pix[0]][pix[1]] = Ic
+            Is_image[pix[0]][pix[1]] = Is
         else:
-            Ic_image[x][y] = 0
-            Is_image[x][y] = 0
+            Ic_image[pix[0]][pix[1]] = 0
+            Is_image[pix[0]][pix[1]] = 0
         bari += 1
         bar.update(bari)
     bar.finish()

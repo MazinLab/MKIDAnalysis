@@ -126,7 +126,7 @@ def muVar_to_IcIs(mu, var, effExpTime):
         Ic = np.sqrt(mu ** 2 - var + mu)
         Is = mu - Ic
     else:
-        return
+        raise ValueError('nans encountered in mean count rate')
 
     Ic /= effExpTime
     Is /= effExpTime
