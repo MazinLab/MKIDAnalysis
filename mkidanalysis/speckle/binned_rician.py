@@ -23,6 +23,7 @@ from scipy.special import eval_laguerre, eval_genlaguerre
 from scipy import optimize
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.stats import poisson
+from mkidanalysis.speckle.binfree_rician import MRlogL
 import multiprocessing
 
 

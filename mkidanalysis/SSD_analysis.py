@@ -56,7 +56,7 @@ class SSDAnalyzer:
         for i, fn in enumerate(os.listdir(h5_dir)):
             if fn.endswith('.h5') and fn.startswith('1'):
                 self.h5_files.append(h5_dir + fn)
-        self.photontables = [Photontable[h5] for h5 in self.h5_dir]
+        self.photontables = [Photontable(h5) for h5 in self.h5_files]
         self.intt = self.photontables[0].query_header('EXPTIME')
 
     def run_ssd(self):
@@ -182,11 +182,11 @@ def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig
             fn_list.append(data_path + fn)
     if binned:
         p = Pool(ncpu)
-        f = partial(binned_ssd, save=True, savefile=component_dir, bin_size=bin_size)
+        f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size)
         p.map(f, fn_list)
     else:
         p = Pool(ncpu)
-        f = partial(binfree_ssd, savefile=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
+        f = partial(binfree_ssd, save_dir=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
         p.map(f, fn_list)
 
 
@@ -211,7 +211,7 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01):
     bar = ProgressBar(maxval=20439).start()
     bari = 0
     for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
-        ts = pt.query(pixel=pix, column='Time')
+        ts = pt.query(pixel=pix, column='time')
         if len(ts) > 0:
             lc_counts, lc_intensity, lc_times = getLightCurve(ts/10**6, effExpTime=bin_size)
             mu = np.mean(lc_counts)
