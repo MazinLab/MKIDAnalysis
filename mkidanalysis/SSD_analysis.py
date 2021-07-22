@@ -70,15 +70,15 @@ class SSDAnalyzer:
         calculate_components(self.h5_dir, self.component_dir, ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig,
                       set_ip_zero=self.set_ip_zero, binned=self.binned, bin_size=self.bin_size)
         getLogger(__name__).info('Initializing fits files')
-        initialize_fits(self.h5_dir, self.fits_dir, ncpu=self.ncpu)
+        initialize_fits(self.h5_dir, self.fits_dir, ncpu=self.ncpu, intt=self.intt)
         if self.binned:
             component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
-                update_fits(self.component_dir + '/' + ct, self.fits_dir, ext=ct)
+                update_fits(self.component_dir + ct + '/', self.fits_dir, ext=ct)
         else:
             component_types = ['Ic', 'Is', 'Ip']
             for i, ct in enumerate(component_types):
-                update_fits(self.component_dir + '/' + ct, self.fits_dir, ext=ct)
+                update_fits(self.component_dir + ct + '/', self.fits_dir, ext=ct)
         if self.drizzle:
             getLogger(__name__).info(f'Creating and saving component drizzles in {self.fits_dir}')
             self.save_drizzles()
@@ -128,7 +128,7 @@ class SSDAnalyzer:
         return None
 
 
-def initialize_fits(in_file_path, out_file_path, ncpu=1):
+def initialize_fits(in_file_path, out_file_path, intt, ncpu=1):
     """
     wrapper function for running multiprocessing with init_fits
     :param in_file_path: location fo the input h5 files
@@ -144,11 +144,11 @@ def initialize_fits(in_file_path, out_file_path, ncpu=1):
         if fn.endswith('.h5') and not os.path.exists(out_file_path + fn[0:-3] + '.fits'):
             fn_list.append(in_file_path + fn)
     p = Pool(ncpu)
-    f = partial(init_fits, out_file_path=out_file_path)
+    f = partial(init_fits, out_file_path=out_file_path, intt=intt)
     p.map(f, fn_list)
 
 
-def init_fits(fn, out_file_path):
+def init_fits(fn, out_file_path, intt):
     """
     creates a fits file from h5 file, fn by calling Photontable.get_fits().
     :param fn: h5 file to make a fits file from
@@ -156,8 +156,9 @@ def init_fits(fn, out_file_path):
     :return: None
     """
     pt = Photontable(fn)
-    hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS)
+    hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS, cube_type='time', bin_width=intt)
     hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
+    hdu.close()
     getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
 
 
@@ -311,15 +312,15 @@ def update_fits(data_file_path, fits_file_path, ext='UNKNOWN'):
                 if fit.endswith('.fits'):
                     if fit[0:-5] == fn[0:-4]:
                         try:
-                            # if len(hdu) > 7:
-                            #     getLogger(__name__).info('Data already appended to {}'.format(fit))
-                            #     pass
                             data = np.load(data_file_path + fn)
                             hdr = fits.Header()
-                            hdr['EXTNAME'] = ext
-                            fits.append(fits_file_path + fit, data, hdr)
+                            hdu = fits.ImageHDU(data=data, header=hdr, name=ext)
+                            hdul = fits.open(fits_file_path+fit)
+                            hdul.append(hdu)
+                            hdul.writeto(fits_file_path+fit, overwrite=True)
                         except OSError:
                             getLogger(__name__).info('Error trying to append ImageHdu {}'.format(fn[0:-4]))
+                            print('couldnt attach image!!!!!!!!!!!!!1')
                             pass
 
 
