@@ -17,6 +17,7 @@ from mkidanalysis.speckle.binfree_rician import optimize_IcIsIr2
 from matplotlib import gridspec
 from mkidcore.corelog import getLogger
 from progressbar import ProgressBar
+from mkidcore.pixelflags import FlagSet
 from matplotlib.patches import Circle
 from multiprocessing import Pool
 from functools import partial
@@ -108,7 +109,7 @@ class SSDAnalyzer:
                 infiles.append(self.fits_dir + fn)
         target = fits.open(infiles[0])[0].header['OBJECT']
         ref_wcs = get_canvas_wcs(target)
-        driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5)
+        driz = Drizzle(outwcs=ref_wcs, pixfrac=0.2, wt_scl='')
         for i, infile in enumerate(infiles):
             try:
                 imlist = fits.open(infile)
@@ -117,11 +118,19 @@ class SSDAnalyzer:
                 except IndexError:
                     getLogger(__name__).info(f'Fits files in {self.fits_dir} have no Ic, Is, and Ip data attached')
                     return
-                image_wcs = self.photontables[i].get_wcs()
-                weight_arr = imlist['BAD'].data
+                flags = imlist['FLAGS'].data
+                file_flags = self.photontables[i].flags
+                bad_bit_mask = file_flags.bitmask(PROBLEM_FLAGS)
+                weight_arr = np.zeros((140,146))
+                for (x,y), flag in np.ndenumerate(flags):
+                    if flags[x,y] & bad_bit_mask != 0:
+                        weight_arr[x, y] = 0
+                    else:
+                        weight_arr[x, y] = 1
                 intt = imlist[0].header['EXPTIME']
                 cps = image / intt
-                driz.add_image(cps, inwcs=image_wcs, in_units='cps', expin=intt, wt_scl=weight_arr)
+                image_wcs = self.photontables[i].get_wcs(wcs_timestep=intt)[0]
+                driz.add_image(cps.T, inwcs=image_wcs, in_units='cps', inwht=weight_arr.T)
             except ValueError:
                 pass
         driz.write(self.fits_dir + plot_type + '_drizzle.fits')
@@ -156,7 +165,7 @@ def init_fits(fn, out_file_path, intt):
     :return: None
     """
     pt = Photontable(fn)
-    hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS, cube_type='time', bin_width=intt)
+    hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS)
     hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
     hdu.close()
     getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
@@ -312,15 +321,14 @@ def update_fits(data_file_path, fits_file_path, ext='UNKNOWN'):
                 if fit.endswith('.fits'):
                     if fit[0:-5] == fn[0:-4]:
                         try:
+                            hdul = fits.open(fits_file_path+fit)
                             data = np.load(data_file_path + fn)
                             hdr = fits.Header()
                             hdu = fits.ImageHDU(data=data, header=hdr, name=ext)
-                            hdul = fits.open(fits_file_path+fit)
                             hdul.append(hdu)
                             hdul.writeto(fits_file_path+fit, overwrite=True)
                         except OSError:
                             getLogger(__name__).info('Error trying to append ImageHdu {}'.format(fn[0:-4]))
-                            print('couldnt attach image!!!!!!!!!!!!!1')
                             pass
 
 
@@ -352,7 +360,7 @@ def get_canvas_wcs(target):
     npixx=500
     npixy=500
     coords = SkyCoord.from_name(target)
-    wcs = WCS(naxis = 2)
+    wcs = WCS(naxis=2)
     wcs.wcs.crpix = np.array([npixx/2., npixy/2.])
     wcs.wcs.crval = [coords.ra.deg, coords.dec.deg]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
