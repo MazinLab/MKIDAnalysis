@@ -73,3 +73,8 @@ class ADI():
 
         if self.full_output:
             return out_cube, derot_cube
+
+
+    def __repr__(self):
+        kwgs = ', '.join([f'{kwarg}={val}' for kwarg, val in self.kwargs.items()])
+        return f'(obs_start={self.obs_start}, obs_end={self.obs_end}, full_output={self.full_output}, mkid_obs={self.full_output}, {kwgs})'
