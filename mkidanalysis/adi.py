@@ -121,9 +121,9 @@ class ADI():
         return obs_start, obs_end
 
     @classmethod
-    def from_mkid_obd(cls, mkid_obd, frame_time=None, in_cube=None, full_output=False, site='subaru'):
+    def from_mkid_obd(cls, mkid_obd, invert_angles=False, frame_dur=None, in_cube=None, full_output=False, site='subaru'):
         """
-        Alternate Constructor using MKIDObservingDataset object. Pulls information from
+        Alternate Constructor using MKIDObservingDataset (mkid_obd) object. Pulls information from
         data.yaml file. TO-DO: Add more functionality to this to pull more information out
         of the MKIDObservingDataset object (e.g. more metadata) to reduce # of input params
         needed for instantiation.
@@ -136,7 +136,7 @@ class ADI():
                 target_coord = mk_obs.skycoord
                 break
         
-        return cls(obs_start, obs_end, target_coord, frame_time, in_cube, full_output, site)
+        return cls(obs_start, obs_end, target_coord, invert_angles, frame_dur, in_cube, full_output, site)
 
 
     def run(self, **kwargs):
@@ -144,7 +144,7 @@ class ADI():
         Runs ADI algorithm
 
         Inputs:
-            kwargs that are valid for the VIP median_sub function. See docs:
+            kwargs that are valid for tuning the VIP median_sub function. See docs:
             https://vip.readthedocs.io/en/latest/vip_hci.medsub.html?highlight=adi#
 
         Returns (if flagged): 
