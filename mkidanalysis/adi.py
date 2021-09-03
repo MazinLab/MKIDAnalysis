@@ -171,3 +171,22 @@ class ADI():
     #    kwgs = ', '.join([f'{kwarg}={val}' for kwarg, val in self.kwargs.items()])
     #    obs_times = f'obs_start={self.obs_start}, obs_end={self.obs_end}'
     #    return f'({obs_times}, full_output={self.full_output}, {kwgs})'
+
+def validate_science_target(startt, stopt, target):
+    from astropy.coordinates import SkyCoord
+    try:
+        tc = SkyCoord.from_name(target)
+    except:
+        raise Exception('Sky Coord from name not found')
+    site = Observer.at_site('Subaru')
+    times = np.arange(startt, stopt+1, 1)
+    para_angle = np.rad2deg(np.array(site.parallactic_angle(Time(val=times, format='unix'), tc).value))
+    wo_wrapping = []
+    for i in para_angle:
+        if i < 0:
+            wo_wrapping.append(360+i)
+        else:
+            wo_wrapping.append(i)
+    wo_wrapping = np.array(wo_wrapping)
+
+    return {'duration': (times[-1] - times[0]), 'angles':para_angle, 'p_angles': wo_wrapping}
