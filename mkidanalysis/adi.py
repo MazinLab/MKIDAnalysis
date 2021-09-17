@@ -182,21 +182,97 @@ class ADI():
     #    obs_times = f'obs_start={self.obs_start}, obs_end={self.obs_end}'
     #    return f'({obs_times}, full_output={self.full_output}, {kwgs})'
 
-def validate_science_target(startt, stopt, target):
+def validate_science_target(startt, stopt, target, deltat=None):
+    """
+    Similar to the _calc_para_angles, used to report the duration of a given observation and how much rotation the FOV
+    goes through during that duration. Also provides the corresponding timestamps for convenient plotting. If deltat is
+    provided, it will use that as the time between timestamps/PAs, otherwise it will default to 1s intervals. The angles
+    returned are in radians NOT DEGREES.
+    """
     from astropy.coordinates import SkyCoord
     try:
         tc = SkyCoord.from_name(target)
     except:
         raise Exception('Sky Coord from name not found')
     site = Observer.at_site('Subaru')
-    times = np.arange(startt, stopt+1, 1)
-    para_angle = np.rad2deg(np.array(site.parallactic_angle(Time(val=times, format='unix'), tc).value))
-    wo_wrapping = []
-    for i in para_angle:
-        if i < 0:
-            wo_wrapping.append(360+i)
-        else:
-            wo_wrapping.append(i)
-    wo_wrapping = np.array(wo_wrapping)
+    if deltat:
+        times = np.arange(startt, stopt+deltat, deltat)
+    else:
+        times = np.arange(startt, stopt+1, 1)
+    para_angle = np.array(site.parallactic_angle(Time(val=times, format='unix'), tc).value)
+    # para_angle = np.rad2deg(np.array(site.parallactic_angle(Time(val=times, format='unix'), tc).value))
+    # para_angle += 180
+
+    return {'duration': (times[-1] - times[0]), 'angles': para_angle, 'time': times}
+
+
+def expand_frame(ctr, img, fill_value=np.nan):
+    """
+    Helper function to take a frame (presumably from an ADI observation) where the center of the PSF is not centered in
+    in the image and add space around the edges of the image to make sure that the PSF is centered. This is so that in
+    the VIP ADI code, you do not have to hand off a keyword specifying the coordinate where the center of rotation is.
+    Alternatively, in adi.run, you can pass {'cxy': [xpos,ypos]} as a kwarg and it will use that as the center to
+    rotate around.
+    :param ctr: List or tuple in form [x, y] where x and y are the position of the center of the coronagraph in the frame
+    :param img: A frame that you wish to expand. Makes no assumptions other than x-axis is the horizontal and y-axis is
+    the vertical.
+    :param fill_value: The value which the padded space is filled in with. np.nan is default (And recommended).
+    :return: The input frame, but with the PSF now in the center, with the expanded space filled in with fill_value.
+    """
+    img_y_dim, img_x_dim = img.shape
+    top_to_y = img_y_dim - ctr[1]
+    bottom_to_y = ctr[1]
+    right_to_x = img_x_dim - ctr[0]
+    left_to_x = ctr[0]
+    y_expand = max(top_to_y, bottom_to_y)
+    x_expand = max(right_to_x, left_to_x)
+    diff = abs(x_expand-y_expand)
+    if y_expand == bottom_to_y:
+        pad_down = 1
+        pad_up = ctr[1] + y_expand - img_y_dim
+    else:
+        pad_down = abs(ctr[1] - y_expand)
+        pad_up = 1
+    if x_expand == left_to_x:
+        pad_left = 1
+        pad_right = ctr[0] + x_expand - img_x_dim
+    else:
+        pad_left = abs(ctr[0] - x_expand)
+        pad_right = 1
+    if x_expand > y_expand:
+        pad_up += diff
+        pad_down += diff
+    else:
+        pad_left += diff
+        pad_right += diff
+
+    return np.pad(img, ((pad_down, pad_up), (pad_left, pad_right)), mode='constant', constant_values=fill_value)
+
+
+def add_planet(imcube, sep, angles, cts):
+    """
+    Takes an image cube (typically an ADI sequence) and adds a planet at the given separation (in pixels) at the given
+    angle from the list of angles input. Angles is assumed to be given in radians. The 'planet' will be a 3-by-3 square
+    with the cts specified added to each pixel in the square (e.g. if cts=300, angle=0, sep=10, then there will be a
+    'planet' centered at [ctr+10, ctr+0] with 2700 total counts.
+    TODO: Make the planet size changeable and have the shape be changeable as well (gaussian PSF?)
+    """
+    img_cube = np.copy(imcube)
+    new_pos = []
+    ctr=np.array(img_cube.shape[1:])/2
+    for i in angles:
+        planet_pos = [ctr[0]+sep*np.cos(i), ctr[1]+sep*np.sin(i)]
+        new_pos.append(planet_pos)
+
+    for i,k in enumerate(new_pos):
+        coord = [int(k[0]), int(k[1])]
+        x=[j for j in range(int(coord[0])-2, int(coord[0])+3)]
+        y=[j for j in range(int(coord[1])-2, int(coord[1])+3)]
+        for xpos in x:
+            for ypos in y:
+                img_cube[i][ypos][xpos] += cts
+    return new_pos, img_cube
+
+
 
     return {'duration': (times[-1] - times[0]), 'angles':para_angle, 'p_angles': wo_wrapping}
