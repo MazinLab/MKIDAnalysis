@@ -23,7 +23,7 @@ class ADI():
                  obs_start,
                  obs_end,
                  target_coord,
-                 invert_angles=False, #Need to figure out why this is necessary (rotation quirkiness in VIP)
+                 flip_frames_y=False,
                  frame_dur=None,
                  in_cube=None,
                  site='subaru'):
@@ -33,9 +33,10 @@ class ADI():
             Can be None if using as informational only (haven't run pipeline).
             -kwargs: Keyword arguments (and values) used in the most recent execution of run()
             -obs_start/obs_end: Unix epoch of start and end times
+            -flip_frames_y: The VIP algorithm assumes that the origin of the image is in the bottom left. The drizzler
+            is set up so that it puts the origin in the top right. In the case derotation fails (i.e. the PAs are
+            'backward') set flip_frames_y to True to orient the frames as they are expected to be input into VIP;s algorithm
             -target_coord: Astropy SkyCoord object created for the obs target
-            -invert_angles: Bool that is used to change direction of derotation in VIP. TO-DO to find
-            out why this is needed
             -frame_dur: Duration, in seconds, of each frame in a potential data cube. Used for informational
             purposes only (E.g. Need to determine parallactic angles for some potential cube before running pipeline)
             -site: String of instrument location; For Observer object
@@ -45,12 +46,14 @@ class ADI():
             NOTE: frame_dur and in_cube cannot both be None. If passing values for both (no reason for this),
             in_cube will be preferred.
         """
+        for i in range(len(in_cube)):
+            if flip_frames_y:
+                in_cube[i] = np.flipud(in_cube[i])
         self.in_cube = in_cube
         self.kwargs = None # Will be set after every iteration of run()
         self.obs_start = obs_start
         self.obs_end = obs_end
         self.target_coord = target_coord
-        self.invert_angles = invert_angles
         self.frame_dur = frame_dur
         self.site = site
         self.ref_psf = None # Will be set after every iteration of run()
@@ -70,8 +73,6 @@ class ADI():
             self.n_frames = in_cube.shape[0]
 
         self.angle_list = self._calc_para_angles(obs_start, obs_end, self.n_frames, site, target_coord)
-        if self.invert_angles:
-            self.angle_list *= -1
 
     @property
     def fov_rotation(self):
