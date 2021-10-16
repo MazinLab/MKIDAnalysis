@@ -171,8 +171,9 @@ def binMRlogL(n, Ic, Is):
 
     # if elements in tmp are np.inf, then go through them and fix with mpmath.
     tmp2 = n[np.isinf(tmp)]
-    for ii in tmp2:
-        tmp[ii] = float(mpmath.log(mpmath.laguerre(int(ii), 0, k)))
+    idxs = np.where(np.isinf(tmp))[0]
+    for n, i in enumerate(idxs):
+        tmp[i] = float(mpmath.log(mpmath.laguerre(int(tmp2[n]), 0, k)))
 
     tmp -= k
     a = np.log(1./(Is+1)) - Ic/Is
