@@ -336,3 +336,44 @@ def normalize_frame(original_img, cut_min=-np.inf, cut_max=np.inf, cut_sigma:int
 
 def img_norm(image):
     return image / np.nansum(image)
+
+
+if __name__ == "__main__":
+    from astropy.io import fits
+    import matplotlib.pyplot as plt
+
+    # Read in the dither data (only necessary if you want to directly use the times from the metadata
+    cfg_path = '/home/nswimmer/mkidwork/20211016/'
+    pipe_cfg = cfg_path+'pipe.yaml'
+    out_cfg = cfg_path+'out.yaml'
+    data_cfg = cfg_path+'data.yaml'
+    mkc.configure_pipeline(pipe_cfg)
+    o = mkd.MKIDOutputCollection(out_cfg, datafile=data_cfg)
+    d = o.dataset
+
+    # Read the middle time from each frame
+    times = [np.average([i.start, i.stop]) for i in d.all_observations if 'dither_0' in i.name]
+
+    # Load in an ADI cube. In this case, a temporal drizzle where each frame is 1 dither step. The drizzler has already
+    # moved the center of the target to the center of each frame
+    adi_cube = fits.open('/work/nswimmer/20211016/out/hip99770_dither_0/hip99770_dither_0_longwcs_drizzle.fits')[1].data
+
+    # Add a 'planet' 15 pixels from the center with 30cps in each pixel it covers
+    # Comment out if not needed
+    adi_cube = add_planet(adi_cube, 15, validate_science_target("Hip 99770", times)['angles'], 30)[1]
+
+    # One method for normalizing each frame in the adi cube. Useful if there are wild changes in brightness over the
+    # duration of the observation (e.g. a cloud went in front of the telescope)
+    # Comment out if not needed
+    # adi_cube_norm = np.array([img_norm(im) for im in adi_cube])
+
+    # Initialize ADI
+    a = ADI("Hip 99770", np.copy(adi_cube), times=times, flip_frames_y=True)
+
+    # Run ADI using 'full frame' method ('classic' ADI) or 'annular', which uses full frame in addition to a localized
+    # annulus PSF reference for improved noise reduction. Can be run with any number of different keywords as specified
+    # from the VIP ADI median_sub function (https://vip.readthedocs.io/en/latest/_modules/vip_hci/medsub/medsub_source.html#median_sub)
+    # NOTE: Each time the algorithm is re-run, the reference PSF is recalculated (it will not change if you do not modify
+    # the ADI cube.
+    out1 = a.run(**{'radius_int': 12})
+    out2 = a.run(**{'mode':'annular', 'radius_int': 12})
