@@ -61,7 +61,6 @@ class SSDAnalyzer:
                 self.h5_files.append(h5_dir + fn)
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
         self.intt = self.photontables[0].query_header('EXPTIME')
-        self.wcs_list = [pt.get_wcs(derotate=True, wcs_timestep=self.intt) for pt in self.photontables]
 
     def run_ssd(self):
         """
@@ -182,7 +181,7 @@ def init_fits(fn, out_file_path, intt):
     """
     pt = Photontable(fn)
     with pt.needed_ram():
-        hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS)
+        hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS, derotate=True)
         hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
         hdu.close()
         getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
