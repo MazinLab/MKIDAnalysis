@@ -278,7 +278,7 @@ def add_planet(imcube, sep, angles, cts):
     Takes an image cube (typically an ADI sequence) and adds a planet at the given separation (in pixels) at the given
     angle from the list of angles input. Angles is assumed to be given in radians. The 'planet' will be a 3-by-3 square
     with the cts specified added to each pixel in the square (e.g. if cts=300, angle=0, sep=10, then there will be a
-    'planet' centered at [ctr+10, ctr+0] with 2700 total counts.
+    'planet' centered at [ctr+10, ctr+10] with 2700 total counts.
     TODO: Make the planet size changeable and have the shape be changeable as well (gaussian PSF?)
     """
     img_cube = np.copy(imcube)
