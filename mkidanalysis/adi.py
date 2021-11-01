@@ -298,5 +298,40 @@ def add_planet(imcube, sep, angles, cts):
     return new_pos, img_cube
 
 
+def normalize_frame(original_img, cut_min=-np.inf, cut_max=np.inf, cut_sigma:int=10, scale=1):
+    """
+    Function to normalize frames so that intensities from frame to frame can be compared to one another (especially for
+    the case of dimming over time in a sequence). Attempts to make a sensible cut so that only extreme outliers are set
+    to the max/min desired.
+    :param original_img:
+    :param cut_min:
+    :param cut_max:
+    :param cut_sigma:
+    :param scale:
+    :return:
+    """
+    img = np.copy(original_img)
+    std = np.std(img)
 
-    return {'duration': (times[-1] - times[0]), 'angles':para_angle, 'p_angles': wo_wrapping}
+    if np.isfinite(cut_max):
+        m_up = (img >= cut_sigma * cut_max)
+        img[m_up] = cut_sigma * cut_max
+        img_max = cut_sigma * cut_max
+    else:
+        m_up = (img >= cut_sigma * std)
+        img[m_up] = cut_sigma * std
+        img_max = cut_sigma * std
+    if np.isfinite(cut_min):
+        m_down = (img <= cut_sigma * cut_min)
+        img[m_down] = cut_sigma * cut_min
+        img_min = cut_sigma * cut_min
+    else:
+        m_down = (img <= -1 * cut_sigma * std)
+        img[m_down] = -1 * cut_sigma * std
+        img_min = -1 * cut_sigma * std
+
+    norm = scale * (img - img_min) / (img_max - img_min)
+    return norm
+
+def img_norm(image):
+    return image / np.nansum(image)
