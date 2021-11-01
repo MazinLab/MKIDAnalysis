@@ -294,7 +294,8 @@ def add_planet(imcube, sep, angles, cts):
         y=[j for j in range(int(coord[1])-2, int(coord[1])+3)]
         for xpos in x:
             for ypos in y:
-                img_cube[i][ypos][xpos] += cts
+                if img_cube[i][ypos][xpos] >= 10:
+                    img_cube[i][ypos][xpos] += cts
     return new_pos, img_cube
 
 
