@@ -8,7 +8,7 @@ ssd = SSDAnalyzer(h5_dir=h5_folder, fits_dir=save_folder + 'fits/', component_di
 ssd.run_ssd()
 
 '''
-
+from scipy.stats import norm
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -42,7 +42,7 @@ PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone'
 class SSDAnalyzer:
     """Class for running binned or binfree SSD analysis on MKID data (calibrated h5 files)"""
     def __init__(self, h5_dir='', fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
-                 binned=True, drizzle=True, bin_size=0.01):
+                 binned=True, drizzle=True, bin_size=0.01, read_noise=None):
         self.h5_dir = h5_dir
         self.fits_dir = fits_dir
         self.component_dir = component_dir
@@ -54,11 +54,14 @@ class SSDAnalyzer:
         self.h5_files = []
         self.drizzle = drizzle
         self.bin_size = bin_size
+        self.read_noise = read_noise
+        print(f'read noise is {self.read_noise}')
         for i, fn in enumerate(os.listdir(h5_dir)):
             if fn.endswith('.h5') and fn.startswith('1'):
                 self.h5_files.append(h5_dir + fn)
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
         self.intt = self.photontables[0].query_header('EXPTIME')
+        self.wcs_list = [pt.get_wcs(derotate=True, wcs_timestep=self.intt) for pt in self.photontables]
 
     def run_ssd(self):
         """
@@ -87,9 +90,9 @@ class SSDAnalyzer:
     def save_drizzles(self):
         """wrapper for drizzle_components"""
         if self.binned or self.set_ip_zero:
-            components = ['Ic', 'Is']
+            components = ['Ic', 'Is', 'SCIENCE']
         else:
-            components = ['Ic', 'Is', 'Ip']
+            components = ['Ic', 'Is', 'Ip', 'SCIENCE']
         for ct in components:
             self.drizzle_components(plot_type=ct)
 
@@ -109,7 +112,7 @@ class SSDAnalyzer:
                 infiles.append(self.fits_dir + fn)
         target = fits.open(infiles[0])[0].header['OBJECT']
         ref_wcs = get_canvas_wcs(target)
-        driz = Drizzle(outwcs=ref_wcs, pixfrac=0.2, wt_scl='')
+        driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5, wt_scl='')
         for i, infile in enumerate(infiles):
             try:
                 imlist = fits.open(infile)
@@ -121,16 +124,29 @@ class SSDAnalyzer:
                 flags = imlist['FLAGS'].data
                 file_flags = self.photontables[i].flags
                 bad_bit_mask = file_flags.bitmask(PROBLEM_FLAGS)
-                weight_arr = np.zeros((140,146))
-                for (x,y), flag in np.ndenumerate(flags):
-                    if flags[x,y] & bad_bit_mask != 0:
+                weight_arr = np.ones((140,146))
+                for (x, y), flag in np.ndenumerate(flags):
+                    if flag & bad_bit_mask != 0:
                         weight_arr[x, y] = 0
                     else:
                         weight_arr[x, y] = 1
-                intt = imlist[0].header['EXPTIME']
-                cps = image / intt
-                image_wcs = self.photontables[i].get_wcs(wcs_timestep=intt)[0]
-                driz.add_image(cps.T, inwcs=image_wcs, in_units='cps', inwht=weight_arr.T)
+                cps = image/self.intt
+                if plot_type == 'Is':
+                    tcps = cps.T
+                    is_lim = np.nanmedian(tcps[tcps != 0])
+                    tcps[tcps > (100 * is_lim)] = 0
+                    bad_idx = np.where(tcps <= 0)
+                    weight_arr[bad_idx] = 0
+                if plot_type == 'Ic':
+                    tcps = cps.T
+                    ic_lim = np.nanmedian(tcps[tcps != 0])
+                    tcps[tcps > (100 * ic_lim)] = 0
+                    bad_idx = np.where(tcps <= 0)
+                    weight_arr[bad_idx] = 0
+                cps[np.isnan(cps)] = 0
+                image_wcs = WCS(imlist[0].header)
+                image_wcs.pixel_shape = (146, 140)
+                driz.add_image(cps.T, inwcs=image_wcs, in_units='cps', inwht=weight_arr)
             except ValueError:
                 pass
         driz.write(self.fits_dir + plot_type + '_drizzle.fits')
@@ -152,7 +168,7 @@ def initialize_fits(in_file_path, out_file_path, intt, ncpu=1):
                 f'fits file {fn[0:-3]}.fits already exists in the specified directory, not creating a new one')
         if fn.endswith('.h5') and not os.path.exists(out_file_path + fn[0:-3] + '.fits'):
             fn_list.append(in_file_path + fn)
-    p = Pool(ncpu)
+    p = Pool(8)
     f = partial(init_fits, out_file_path=out_file_path, intt=intt)
     p.map(f, fn_list)
 
@@ -165,14 +181,15 @@ def init_fits(fn, out_file_path, intt):
     :return: None
     """
     pt = Photontable(fn)
-    hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS)
-    hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
-    hdu.close()
-    getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
+    with pt.needed_ram():
+        hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS)
+        hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
+        hdu.close()
+        getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
 
 
 def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False,
-                  bin_size=0.01):
+                         bin_size=None, read_noise=0.0):
     """
     wrapper for running the binned or binfree SSD code
 
@@ -184,6 +201,8 @@ def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig
     :param set_ip_zero: if binned=False and True will run the binfree SSD enforcinf Ip to 0. Ignored if binned=True
     :param binned: If True will run binned SSD otherwise will run binfree SSD
     :param bin_size: Size of time bins for binned SSD analysis. Ignored if binned=False
+    :param read_noise: option to add poisson noise to the SSD calculation to simulate results for non-MKID detectors
+    like EMCCDs
     :return: None
     """
     fn_list = []
@@ -192,7 +211,7 @@ def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig
             fn_list.append(data_path + fn)
     if binned:
         p = Pool(ncpu)
-        f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size)
+        f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise)
         p.map(f, fn_list)
     else:
         p = Pool(ncpu)
@@ -200,7 +219,7 @@ def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig
         p.map(f, fn_list)
 
 
-def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01):
+def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_noise=0.0):
     """
     function for running binned SSD
 
@@ -220,35 +239,44 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01):
         return
     bar = ProgressBar(maxval=20439).start()
     bari = 0
-    for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
-        ts = pt.query(pixel=pix, column='time')
-        if len(ts) > 0:
-            lc_counts, lc_intensity, lc_times = getLightCurve(ts/10**6, effExpTime=bin_size)
-            mu = np.mean(lc_counts)
-            var = np.var(lc_counts)
-            try:
-                IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, bin_size)) * bin_size
-            except ValueError:
-                IIc = mu / 2  # just create a reasonable seed
-                IIs = mu - IIc
-            Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs)
-            Ic_image[pix[0]][pix[1]] = Ic
-            Is_image[pix[0]][pix[1]] = Is
-        else:
-            Ic_image[pix[0]][pix[1]] = 0
-            Is_image[pix[0]][pix[1]] = 0
-        bari += 1
-        bar.update(bari)
-    bar.finish()
+    with pt.needed_ram():
+        for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
+            ts = pt.query(pixel=pix, column='time')
+            if len(ts) > 0:
+                lc_counts, lc_intensity, lc_times = getLightCurve(ts/10**6, effExpTime=bin_size)
+                mu = np.mean(lc_counts)
+                var = np.var(lc_counts)
+                if read_noise and read_noise !=0:
+                    # for poisson noise
+                    # noise = np.random.poisson(read_noise, len(lc_counts))
+                    # lc_counts = np.array([lc_counts[i] + noise[i] for i in range(len(lc_counts))])
+                    noise = np.random.normal(loc=read_noise, size=len(lc_counts))
+                    noise=np.around(noise).astype(int)
+                    lc_counts = np.array([lc_counts[i] + noise[i] for i in range(len(lc_counts))])
+                    np.clip(lc_counts, 0, 1e5, out=lc_counts)
+                try:
+                    IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, bin_size)) * bin_size
+                except ValueError:
+                    IIc = mu / 2  # just create a reasonable seed
+                    IIs = mu - IIc
+                Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs)
+                Ic_image[pix[0]][pix[1]] = Ic
+                Is_image[pix[0]][pix[1]] = Is
+            else:
+                Ic_image[pix[0]][pix[1]] = 0
+                Is_image[pix[0]][pix[1]] = 0
+            bari += 1
+            bar.update(bari)
+        bar.finish()
     if save:
         try:
-            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
-            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
+            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
         except FileNotFoundError:
             os.mkdir(save_dir + 'Ic/')
             os.mkdir(save_dir + 'Is/')
-            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
-            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
+            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
     return Ic_image, Is_image
 
 
@@ -357,16 +385,16 @@ def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
 
 
 def get_canvas_wcs(target):
-    npixx=500
-    npixy=500
+    npixx = 500
+    npixy = 500
     coords = SkyCoord.from_name(target)
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = np.array([npixx/2., npixy/2.])
     wcs.wcs.crval = [coords.ra.deg, coords.dec.deg]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
     wcs.pixel_shape = (npixx, npixy)
-    wcs.wcs.pc = np.array([[1,0],[0,1]])
-    wcs.wcs.cdelt = [2.889e-06, 2.889e-06] #corresponds to a 10.4 mas platescale
+    wcs.wcs.pc = np.eye(2)
+    wcs.wcs.cdelt = [2.888888889e-06, 2.88888889e-06] #corresponds to a 10.4 mas platescale
     wcs.wcs.cunit = ["deg", "deg"]
     getLogger(__name__).debug(wcs)
     return wcs
