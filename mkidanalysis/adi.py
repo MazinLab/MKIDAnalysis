@@ -31,13 +31,15 @@ class ADI():
     """
 
     def __init__(self,
-                 obs_start,
-                 obs_end,
-                 target_coord,
+                 target,
+                 in_cube=None,
+                 obs_start=None,
+                 obs_end=None,
                  flip_frames_y=False,
                  frame_dur=None,
-                 in_cube=None,
-                 site='subaru'):
+                 times=None,
+                 site='subaru',
+                 ref_keep:int=None):
         """
         Attrs:
             -in_cube: 3D NP cube with observation data. number of frames should be the first dimenstion.
@@ -57,18 +59,32 @@ class ADI():
             NOTE: frame_dur and in_cube cannot both be None. If passing values for both (no reason for this),
             in_cube will be preferred.
         """
+        if not obs_start and not obs_end and (times is None):
+            raise Exception("No times specified at all, ADI cannot run without being given times or a time range.")
+        elif (times is not None) and not (obs_start or obs_end):
+            obs_start = times[0]
+            obs_end = times[-1]
+
+        if in_cube is None:
+            raise Exception("Cannot perform ADI without images to perform it on.")
+
+        if isinstance(target, str):
+            target = SkyCoord.from_name(target)
+
         for i in range(len(in_cube)):
             if flip_frames_y:
                 in_cube[i] = np.flipud(in_cube[i])
+
         self.in_cube = in_cube
         self.kwargs = None # Will be set after every iteration of run()
         self.obs_start = obs_start
         self.obs_end = obs_end
-        self.target_coord = target_coord
+        self.target_coord = target
         self.frame_dur = frame_dur
         self.site = site
         self.ref_psf = None # Will be set after every iteration of run()
         self.final_res = None # Will be set after every iteration of run()
+        self.keep_frames_for_ref = ref_keep
 
         # Informational only (pre-pipeline)
         if not isinstance(in_cube, np.ndarray):
