@@ -2,10 +2,7 @@
 TODO: Make sure that padding image works and expands to a square around your central star
 
 TODO: Add a rate to the  validate_science_target() method (probably in deg/s) to further specify the best regions (in
- time) to use for ADI
-
-TODO: Add image normalization function to take an cube and do some magic on it so that the images are all roughly the
- same brightness
+ time-space) to use for ADI
 """
 from datetime import timezone
 
