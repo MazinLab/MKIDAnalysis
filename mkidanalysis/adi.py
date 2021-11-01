@@ -11,11 +11,13 @@ from datetime import timezone
 
 from astropy.time import Time
 from astroplan import Observer
+from astropy.coordinates import SkyCoord
 import numpy as np
 from vip_hci.medsub import median_sub
 
-from mkidpipeline.config import MKIDObservation
-
+from mkidpipeline.definitions import MKIDObservation
+import mkidpipeline.definitions as mkd
+import mkidpipeline.config as mkc
 
 class ADI():
     """
