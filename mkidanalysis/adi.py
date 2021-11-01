@@ -99,7 +99,7 @@ class ADI():
             print('Number of frames in observation deduced from input cube dims...')
             self.n_frames = in_cube.shape[0]
 
-        self.angle_list = self._calc_para_angles(obs_start, obs_end, self.n_frames, site, target_coord)
+        self.angle_list = self._calc_para_angles(obs_start, obs_end, self.n_frames, site, target, times)
 
     @property
     def fov_rotation(self):
@@ -115,16 +115,18 @@ class ADI():
         """
         return self.obs_end - self.obs_start
 
-    def _calc_para_angles(self, obs_start, obs_end, n_frames, site, target_coord):
+    def _calc_para_angles(self, obs_start, obs_end, n_frames, site, target_coord, times=None):
         """
         Returns NP array of calculated parallactic angles (in degrees) based on
         frame start times in the given cube.
         """
         site = Observer.at_site(site)
-        times = np.linspace(obs_start, obs_end, n_frames, endpoint=False)
+        if times is not None:
+            times = np.linspace(obs_start, obs_end, n_frames, endpoint=False)
         para_angle = site.parallactic_angle(Time(val=times, format='unix'), target_coord).value
-        angle_arr = np.array(para_angle)
-        return np.rad2deg(angle_arr)
+        angle_arr = np.rad2deg(np.array(para_angle))
+        # angle_arr += 180
+        return angle_arr
     
     @staticmethod
     def _get_obs_times(mkid_obd):
