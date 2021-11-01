@@ -183,10 +183,13 @@ class ADI():
             raise AttributeError('No data cube input, unable to run ADI!')
         else:
             cube = np.copy(self.in_cube)
+            ref_cube = np.copy(self.in_cube)
 
         self.kwargs = kwargs
         # Calculate the global ref PSF
-        self.ref_psf = np.median(cube, axis=0)
+        if self.keep_frames_for_ref:
+            ref_cube = ref_cube[::self.keep_frames_for_ref]
+        self.ref_psf = np.median(ref_cube, axis=0)
 
         # Run ADI
         out_cube, derot_cube, self.final_res = median_sub(cube,
