@@ -205,7 +205,7 @@ class ADI():
     #    obs_times = f'obs_start={self.obs_start}, obs_end={self.obs_end}'
     #    return f'({obs_times}, full_output={self.full_output}, {kwgs})'
 
-def validate_science_target(startt, stopt, target, deltat=None):
+def validate_science_target(target, times=None, deltat=None, startt=None, stopt=None):
     """
     Similar to the _calc_para_angles, used to report the duration of a given observation and how much rotation the FOV
     goes through during that duration. Also provides the corresponding timestamps for convenient plotting. If deltat is
@@ -218,10 +218,11 @@ def validate_science_target(startt, stopt, target, deltat=None):
     except:
         raise Exception('Sky Coord from name not found')
     site = Observer.at_site('Subaru')
-    if deltat:
-        times = np.arange(startt, stopt+deltat, deltat)
-    else:
-        times = np.arange(startt, stopt+1, 1)
+    if times is None:
+        if deltat:
+            times = np.arange(startt, stopt+deltat, deltat)
+        else:
+            times = np.arange(startt, stopt+1, 1)
     para_angle = np.array(site.parallactic_angle(Time(val=times, format='unix'), tc).value)
     # para_angle = np.rad2deg(np.array(site.parallactic_angle(Time(val=times, format='unix'), tc).value))
     # para_angle += 180
