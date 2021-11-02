@@ -38,10 +38,12 @@ class InjectPlanet:
         self.cps = cps
         self.pa = pa
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
-        self.intt = self.photontables[0].getFromHeader('expTime')
-        self.pix_sep = (sep * 1000) / self.photontables[0].metadata()['platescale']
-        self.conex_ref = conex_ref if conex_ref else self.photontables[0].metadata()['dither_home']
-        self.pixel_ref = pixel_ref if pixel_ref else self.photontables[0].metadata()['dither_ref']
+        self.intt = np.ceil(self.photontables[0].metadata()['UNIXEND'] - self.photontables[0].metadata()['UNIXSTR'])
+        self.pix_sep = sep / self.photontables[0].metadata()['E_PLTSCL']
+        self.conex_ref = conex_ref if conex_ref else (self.photontables[0].metadata()['E_CXREFX'],
+                                                      self.photontables[0].metadata()['E_CXREFY'])
+        self.pixel_ref = pixel_ref if pixel_ref else (self.photontables[0].metadata()['E_PREFX'],
+                                                      self.photontables[0].metadata()['E_PREFY'])
         for i, pt in enumerate(self.photontables):
             self.photontables[i].file.close()
         self.start_times = np.array(get_start_times(self.h5_folder))
@@ -180,7 +182,7 @@ def normalize_bb(counts, T, lower, upper):
     :param upper:
     :return:
     """
-    norm = scipy.integrate.quad(blackbody, lower, upper, args=T)[0] / counts
+    norm = integrate.quad(blackbody, lower, upper, args=T)[0] / counts
     return norm
 
 
@@ -225,14 +227,14 @@ def inject_photons(file, injected_photons):
     :return:
     """
     h5file = tables.open_file(file, mode="a", title="MKID Photon File")
-    original_photons = h5file.root.Photons.PhotonTable.read()
-    table = h5file.root.Photons.PhotonTable
+    original_photons = h5file.root.photons.photontable.read()
+    table = h5file.root.photons.photontable
     print('Removing existing photons from table')
     table.remove_rows(0, table.nrows)
     print('combining existing and injected photons')
     total_photons = np.concatenate([original_photons, injected_photons])
     print('sorting photons on ResID then time - this will take a bit')
-    total_photons.sort(order=('ResID', 'Time'))
+    total_photons.sort(order=('resID', 'time'))
     table.append(total_photons)
     print('done with {}'.format(file))
     h5file.close()
@@ -245,7 +247,8 @@ def dither_pixel_vector(pt, center):
     :param center: (x, y) location of reference center
     :return: (x, y) displacement relative to center
     """
-    pos = pt.metadata()['dither_pos']
+    pos = (pt.metadata()['E_CONEXX'],
+           pt.metadata()['E_CONEXY'])
     position = np.asarray(pos)
     pix = np.asarray(CONEX2PIXEL(position[0], position[1])) - np.array(CONEX2PIXEL(*center))
     return pix
