@@ -111,13 +111,12 @@ class InjectPlanet:
         companion_image = companion_image.astype(int)
         num_photons = np.sum(companion_image * intt)
         # initialize photon list
-        photons = np.zeros(num_photons, dtype=np.dtype([('ResID', np.uint32), ('Time', np.uint32),
-                                                        ('Wavelength', np.float32), ('SpecWeight', np.float32),
-                                                        ('NoiseWeight', np.float32)]))
+        photons = np.zeros(num_photons.astype(int), dtype=[('resID', np.uint32), ('time', np.uint32),
+                                                        ('wavelength', np.float32), ('weight', np.float32)])
         tally = 0
         for (x, y), resID in np.ndenumerate(pt.beamImage):
             if companion_image[x, y] != 0:
-                counts = companion_image[x, y] * intt
+                counts = np.ceil(companion_image[x, y] * intt).astype(int)
                 t_prev = 0
                 if self.T:
                     wavelengths = get_BB_dist_wvls(counts, self.T)
@@ -128,7 +127,7 @@ class InjectPlanet:
                     pixel_cps = counts/intt
                     t = t_prev + np.random.poisson(10**6/pixel_cps)
                     wvl = wavelengths[i]
-                    photons[tally + i] = (resID, t, wvl, 1.0, 1.0)
+                    photons[tally + i] = (resID, t, wvl, 1.0)
                     t_prev = t
                 tally += counts
 
