@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mkidcore.instruments import CONEX2PIXEL
 import tables
-from mkidpipeline.hdf.photontable import Photontable
+from mkidpipeline.photontable import Photontable
 import astropy
 from astropy.io import fits
 from astropy.coordinates import EarthLocation, SkyCoord
@@ -22,6 +22,7 @@ import time
 from astropy.modeling.blackbody import BlackBody1D
 from astropy import units as u
 import scipy
+from scipy import integrate
 import random
 
 
