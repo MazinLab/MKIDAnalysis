@@ -1,0 +1,83 @@
+#conda update -n base conda
+#conda env create -f <thisfile>
+name: analysis
+channels:
+  - conda-forge
+  - http://ssb.stsci.edu/astroconda
+  - intel
+  - defaults
+dependencies:
+  #Key parts
+  - python>=3.6
+  - hdf5>=1.10.4
+  - pytables>=3.6
+  - mkl
+  - astropy
+  - astroquery
+  - specutils
+  - scipy
+  - matplotlib
+  - scikit-image==0.16.1
+  - scikit-learn
+  - pyqt>=5.6
+  - regions
+  - photutils
+  - ruamel.yaml==0.16.12
+  - drizzle
+  - statsmodels>=0.9
+  - mpmath>=1.0
+  - lmfit>=0.9.11
+  - sharedarray
+  - psutil
+  #Required but might be able to be trimmed or made optional functionality
+  - pypdf2
+  - astroplan
+  - progressbar2
+  - ffmpeg
+  - imagemagick
+  # Key Utilities
+  - ipdb
+  - ipython
+  - pip
+  - cython
+  - yappi
+  #Getting ipp requires the intel channel, it is not known if this is boosting performance
+  - ipp
+  #Useful Utilities
+  - vitables
+
+#Things that probably don't need to be added back
+#  - tensorflow
+#  - mkl-include
+#  - boost
+#  - openblas
+
+  #pip requirements
+  - pip:
+    - multiprocessing-logging>=0.2.6
+    - bleach>=4.1.0
+    - bokeh>=2.3.3
+    - colorcet>=2.0.6
+    - corner>=1.0.3
+    - emcee>=2.2.1
+    - hciplot>=0.1.8
+    - holoviews>=1.14.5
+    - htof>=1.0.1
+    - jinja2>=3.0.1
+    - markdown>=3.3.4
+    - markupsafe>=2.0.1
+    - munch>=2.5.0
+    - nestle>=0.2.0
+    - opencv-python>=4.5.3.56
+    - pandas>=0.25.3
+    - panel>=0.12.1
+    - param>=1.11.1
+    - photutils>=0.7.2
+    - ptemcee>=1.0.0
+    - pyct>=0.4.8
+    - pyprind>=2.11.3
+    - pyviz-comms>=2.1.0
+    - tqdm>=4.62.2
+    - vip-hci>=0.9.11
+
+#prefix: ~/.conda/envs/analysis
