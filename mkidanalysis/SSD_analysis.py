@@ -3,12 +3,11 @@ Code to Perform Stochastic Speckle Discrimination (SSD) on MEC data
 
 Example Usage:
 
-ssd = SSDAnalyzer(h5_dir=h5_folder, fits_dir=save_folder + 'fits/', component_dir=save_folder, plot_dir=save_folder,
+ssd = SSDAnalyzer(h5_files=h5_files, fits_dir=save_folder + 'fits/', component_dir=save_folder, plot_dir=save_folder,
                   ncpu=10, save_plot=True, set_ip_zero=False, binned=False)
 ssd.run_ssd()
 
 '''
-from scipy.stats import norm
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -17,7 +16,6 @@ from mkidanalysis.speckle.binfree_rician import optimize_IcIsIr2
 from matplotlib import gridspec
 from mkidcore.corelog import getLogger
 from progressbar import ProgressBar
-from mkidcore.pixelflags import FlagSet
 from matplotlib.patches import Circle
 from multiprocessing import Pool
 from functools import partial
@@ -39,11 +37,43 @@ PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone'
                  'wavecal.not_enough_histogram_fits', 'wavecal.no_histograms',
                  'wavecal.not_attempted')
 
+
+class SSDManager:
+    def __init__(self, output=None, fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
+                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None):
+        self.outputs = [o for o in output]
+        self.dataset = output.dataset
+        self.names = [o.data.name for o in self.outputs]
+        self.fits_dir = fits_dir
+        self.component_dir = component_dir
+        self.ncpu = ncpu
+        self.prior = prior
+        self.prior_sig = prior_sig
+        self.set_ip_zero = set_ip_zero
+        self.binned = binned
+        self.drizzle = drizzle
+        self.bin_size = bin_size
+        self.read_noise = read_noise
+        self.deadtime = deadtime
+        self.photontables = None
+        self.intt = None
+
+    def run(self):
+        for name in self.names:
+            h5s = [o.h5 for o in self.dataset.datadict[name].obs]
+            self.photontables = [Photontable(h5) for h5 in h5s]
+            self.intt = self.photontables[0].query_header('EXPTIME')
+            ssd = SSDAnalyzer(h5_files=h5s, fits_dir=self.fits_dir, component_dir=self.component_dir,
+                              ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero,
+                              binned=self.binned, drizzle=self.drizzle, bin_size=self.bin_size,
+                              read_noise=self.read_noise, deadtime=self.deadtime)
+            ssd.run_ssd()
+
+
 class SSDAnalyzer:
     """Class for running binned or binfree SSD analysis on MKID data (calibrated h5 files)"""
-    def __init__(self, h5_dir='', fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
-                 binned=True, drizzle=True, bin_size=0.01, read_noise=None):
-        self.h5_dir = h5_dir
+    def __init__(self, h5_files=None, fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
+                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None):
         self.fits_dir = fits_dir
         self.component_dir = component_dir
         self.ncpu = ncpu
@@ -51,29 +81,27 @@ class SSDAnalyzer:
         self.prior = prior
         self.prior_sig = prior_sig
         self.binned = binned
-        self.h5_files = []
+        self.h5_files = h5_files
         self.drizzle = drizzle
         self.bin_size = bin_size
         self.read_noise = read_noise
-        print(f'read noise is {self.read_noise}')
-        for i, fn in enumerate(os.listdir(h5_dir)):
-            if fn.endswith('.h5') and fn.startswith('1'):
-                self.h5_files.append(h5_dir + fn)
+        self.deadtime = deadtime
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
         self.intt = self.photontables[0].query_header('EXPTIME')
 
     def run_ssd(self):
         """
-        runs the SSD code on every h5 file in the h5_dir. Creates fits files which are saved in the fits_dir
+        runs the SSD code on every h5 file in the h5_files. Creates fits files which are saved in the fits_dir
         and adds the Ic, Is, and Ip images onto the end of the fits file.
 
         Also saves a drizzled Ic, Is, and Ip image in the fits_dir if drizzle=True.
         """
         getLogger(__name__).info('Calculating Ic, Ip, and Is')
-        calculate_components(self.h5_dir, self.component_dir, ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig,
-                      set_ip_zero=self.set_ip_zero, binned=self.binned, bin_size=self.bin_size)
+        calculate_components(self.h5_files, self.component_dir, ncpu=self.ncpu, prior=self.prior,
+                             prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero, binned=self.binned,
+                             bin_size=self.bin_size, deadtime=self.deadtime)
         getLogger(__name__).info('Initializing fits files')
-        initialize_fits(self.h5_dir, self.fits_dir, ncpu=self.ncpu, intt=self.intt)
+        initialize_fits(self.h5_files, self.fits_dir, ncpu=self.ncpu)
         if self.binned:
             component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
@@ -105,14 +133,11 @@ class SSDAnalyzer:
         :param plot_type: component type to drizzle - 'Ic', 'Is', or 'Ip'
         :return: None
         """
-        infiles = []
-        for i, fn in enumerate(os.listdir(self.fits_dir)):
-            if fn.endswith('.fits') and fn.startswith('1'):
-                infiles.append(self.fits_dir + fn)
-        target = fits.open(infiles[0])[0].header['OBJECT']
+        fits_files = [self.fits_dir + h5[-13:-3] + '.fits' for h5 in self.h5_files]
+        target = fits.open(fits_files[0])[0].header['OBJECT']
         ref_wcs = get_canvas_wcs(target)
         driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5, wt_scl='')
-        for i, infile in enumerate(infiles):
+        for i, infile in enumerate(fits_files):
             try:
                 imlist = fits.open(infile)
                 try:
@@ -129,7 +154,7 @@ class SSDAnalyzer:
                         weight_arr[x, y] = 0
                     else:
                         weight_arr[x, y] = 1
-                cps = image/self.intt
+                cps = image
                 if plot_type == 'Is':
                     tcps = cps.T
                     is_lim = np.nanmedian(tcps[tcps != 0])
@@ -152,27 +177,27 @@ class SSDAnalyzer:
         return None
 
 
-def initialize_fits(in_file_path, out_file_path, intt, ncpu=1):
+def initialize_fits(fn_list, out_file_path, ncpu=1):
     """
     wrapper function for running multiprocessing with init_fits
-    :param in_file_path: location fo the input h5 files
+    :param fn_list: list of h5 files
     :param out_file_path: location to save the output fits files to
     :param ncpu: number of cores to ue for multiprocessing
     :return: None
     """
-    fn_list = []
-    for i, fn in enumerate(os.listdir(in_file_path)):
-        if os.path.exists(out_file_path + fn[0:-3] + '.fits'):
+    use_fn_list = []
+    for i, fn in enumerate(fn_list):
+        if os.path.exists(out_file_path + fn[-13:-3] + '.fits'):
             getLogger(__name__).info(
                 f'fits file {fn[0:-3]}.fits already exists in the specified directory, not creating a new one')
-        if fn.endswith('.h5') and not os.path.exists(out_file_path + fn[0:-3] + '.fits'):
-            fn_list.append(in_file_path + fn)
-    p = Pool(8)
-    f = partial(init_fits, out_file_path=out_file_path, intt=intt)
-    p.map(f, fn_list)
+        if not os.path.exists(out_file_path + fn[-13:-3] + '.fits'):
+            use_fn_list.append(fn)
+    p = Pool(ncpu)
+    f = partial(init_fits, out_file_path=out_file_path)
+    p.map(f, use_fn_list)
 
 
-def init_fits(fn, out_file_path, intt):
+def init_fits(fn, out_file_path):
     """
     creates a fits file from h5 file, fn by calling Photontable.get_fits().
     :param fn: h5 file to make a fits file from
@@ -181,18 +206,18 @@ def init_fits(fn, out_file_path, intt):
     """
     pt = Photontable(fn)
     with pt.needed_ram():
-        hdu = pt.get_fits(rate=False, exclude_flags=PROBLEM_FLAGS, derotate=True)
+        hdu = pt.get_fits(rate=True, exclude_flags=PROBLEM_FLAGS, derotate=True)
         hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
         hdu.close()
         getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
 
 
-def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False,
-                         bin_size=None, read_noise=0.0):
+def calculate_components(fn_list, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False,
+                         bin_size=None, read_noise=0.0, deadtime=None):
     """
     wrapper for running the binned or binfree SSD code
 
-    :param data_path: location of the h5 files
+    :param fn_list: list of h5 files
     :param component_dir: location to save the component .npy files
     :param ncpu: number of cpus to use
     :param prior: prior for the binfree SSD analysis - defaults to np.nan for all values
@@ -204,17 +229,14 @@ def calculate_components(data_path, component_dir, ncpu=1, prior=None, prior_sig
     like EMCCDs
     :return: None
     """
-    fn_list = []
-    for i, fn in enumerate(os.listdir(data_path)):
-        if fn.endswith('.h5') and fn.startswith('1'):
-            fn_list.append(data_path + fn)
     if binned:
         p = Pool(ncpu)
         f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise)
         p.map(f, fn_list)
     else:
         p = Pool(ncpu)
-        f = partial(binfree_ssd, save_dir=component_dir, IptoZero=set_ip_zero, prior=[prior], prior_sig=[prior_sig])
+        f = partial(binfree_ssd, save=True, save_dir=component_dir, IptoZero=set_ip_zero, prior=prior,
+                    prior_sig=prior_sig, deadtime=deadtime)
         p.map(f, fn_list)
 
 
@@ -279,7 +301,7 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
     return Ic_image, Is_image
 
 
-def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext=''):
+def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext='', deadtime=None):
     """
     Runs the binfree SSD
     :param fn: file to run binned SSD on
@@ -290,11 +312,12 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
     :param prior: prior for the SSD analysis - defaults to np.nan for all values
     :param prior_sig: std of the prior for the SSD analysis - defaults to np.nan for all values
     :param name_ext: optional name extension to apply to the end of the file to be used as an identifier
+    :param deadtime:
     :return: Ic, Is and Ip images
     """
     if prior is None:
-        prior = [np.nan, np.nan, np.nan]
-        prior_sig = [np.nan, np.nan, np.nan]
+        use_prior = None
+        use_prior_sig = None
     pt = Photontable(fn)
     Ic_image = np.zeros((140, 146))
     Is_image = np.zeros((140, 146))
@@ -305,13 +328,18 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
     bar = ProgressBar(maxval=20439).start()
     bari = 0
     for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
-        ts = pt.query(pixel=pix, column='Time')
+        ts = pt.query(pixel=pix, column='time')
         ts = np.sort(ts)
-        dt = np.diff(ts) / 10e6
-        use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
-        use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0], np.nan, np.nan]
+        dt = np.diff(ts) / 1e6
+        if deadtime:
+            dt = np.array([t for t in dt if t > deadtime])
+        if prior:
+            use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
+            use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0],
+                             np.nan, np.nan]
         if len(dt) > 0:
-            model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig, forceIp2zero=IptoZero)
+            model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig, forceIp2zero=IptoZero,
+                                     deadtime=deadtime if deadtime else 1.e-5)
             Ic, Is, Ip = model.x
             Ic_image[pix[0]][pix[1]] = Ic
             Is_image[pix[0]][pix[1]] = Is
@@ -320,15 +348,17 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
         bar.update(bari)
     bar.finish()
     if save:
-        if not os.path.isfile(save_dir + 'Ic/'):
+        try:
+            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
+            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
+        except FileNotFoundError:
             os.mkdir(save_dir + 'Ic/')
             os.mkdir(save_dir + 'Is/')
-            if not IptoZero:
-                os.mkdir(save_dir + 'Ip/')
-        np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image)
-        np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image)
+            os.mkdir(save_dir + 'Ip/')
+            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
+            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
         if not IptoZero:
-            np.save(save_dir + 'Ip/' + fn[-13:-3] + name_ext, Ip_image)
+            np.save(save_dir + 'Ip/' + fn[-13:-3] + name_ext, Ip_image.T)
     return Ic_image, Is_image, Ip_image
 
 
@@ -342,21 +372,23 @@ def update_fits(data_file_path, fits_file_path, ext='UNKNOWN'):
     :return:
     """
     getLogger(__name__).info('Adding SSD data to fits files')
-    for i, fn in enumerate(os.listdir(data_file_path)):
-        for j, fit in enumerate(os.listdir(fits_file_path)):
-            if fn.endswith('.npy'):
-                if fit.endswith('.fits'):
-                    if fit[0:-5] == fn[0:-4]:
-                        try:
-                            hdul = fits.open(fits_file_path+fit)
-                            data = np.load(data_file_path + fn)
-                            hdr = fits.Header()
-                            hdu = fits.ImageHDU(data=data, header=hdr, name=ext)
-                            hdul.append(hdu)
-                            hdul.writeto(fits_file_path+fit, overwrite=True)
-                        except OSError:
-                            getLogger(__name__).info('Error trying to append ImageHdu {}'.format(fn[0:-4]))
-                            pass
+    for j, fit in enumerate(os.listdir(fits_file_path)):
+        hdul = fits.open(fits_file_path + fit)
+        try:
+            im = hdul[ext]
+            pass
+        except KeyError:
+            for i, fn in enumerate(os.listdir(data_file_path)):
+                if fit[0:-5] == fn[0:-4]:
+                    try:
+                        data = np.load(data_file_path + fn)
+                        hdr = fits.Header()
+                        hdu = fits.ImageHDU(data=data, header=hdr, name=ext)
+                        hdul.append(hdu)
+                        hdul.writeto(fits_file_path+fit, overwrite=True)
+                    except OSError:
+                        getLogger(__name__).info('Error trying to append ImageHdu {}'.format(fn[0:-4]))
+                        pass
 
 
 def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
