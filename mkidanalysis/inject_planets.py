@@ -27,17 +27,20 @@ import random
 
 
 class InjectPlanet:
-    def __init__(self, h5_folder, target, sep, pa, cps, T=None, conex_ref=None, pixel_ref=None):
+    def __init__(self, h5_folder, target, sep, pa, cps, T=None, conex_ref=None, pixel_ref=None, timestep=None, rotation_rate=None):
         self.h5_folder = h5_folder
         self.h5_files = []
         for i, fn in enumerate(os.listdir(self.h5_folder)):
             if fn.endswith('.h5'):
                 self.h5_files.append(self.h5_folder + fn)
+        self.h5_files.sort()
         self.target = target
         self.sep = sep
         self.cps = cps
         self.pa = pa
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
+        self.startt = np.floor(self.photontables[0].metadata()['UNIXSTR'])
+        self.stopt = np.ceil(self.photontables[-1].metadata()['UNIXEND'])
         self.intt = np.ceil(self.photontables[0].metadata()['UNIXEND'] - self.photontables[0].metadata()['UNIXSTR'])
         self.pix_sep = sep / self.photontables[0].metadata()['E_PLTSCL']
         self.conex_ref = conex_ref if conex_ref else (self.photontables[0].metadata()['E_CXREFX'],
@@ -46,15 +49,32 @@ class InjectPlanet:
                                                       self.photontables[0].metadata()['E_PREFY'])
         for i, pt in enumerate(self.photontables):
             self.photontables[i].file.close()
-        self.start_times = np.array(get_start_times(self.h5_folder))
-        self.pa_list = get_pa_list(self.start_times, intt=self.intt, target=self.target)
+
+        if timestep is None:
+            self.timestep = None
+            self.times = np.arange(self.startt, self.stopt + self.intt, self.intt)
+            self.pa_list = get_pa_list(self.times, intt=self.intt, target=self.target)
+        else:
+            self.timestep = timestep
+            self.times = np.arange(self.startt, self.stopt + timestep, timestep)
+            self.pa_list = get_pa_list(self.times, intt=timestep, target=self.target)
+
         self.delta_pas = np.array([i - self.pa_list[0] for i in self.pa_list])
+
+        if rotation_rate is not None:
+            original_rot_rate = (self.delta_pas[-1] - self.delta_pas[0])/(self.times[-1] - self.times[0])
+            scale_factor = abs(rotation_rate / original_rot_rate)
+        else:
+            scale_factor = 1
+
+        self.delta_pas = scale_factor * self.delta_pas
+
         self.companion_photons = {}
         self.T = T if T else None
 
     def run(self):
         for i, file in enumerate(self.h5_files):
-            injected_photons = self.get_companion_photons(file)
+            injected_photons = self.get_companion_photons(file, timestep=self.timestep)
             self.companion_photons.update({file: injected_photons})
         self.run_parallel()
 
@@ -63,79 +83,159 @@ class InjectPlanet:
         f = partial(worker, photon_dict=self.companion_photons)
         p.map(f, self.h5_files)
 
-    def get_companion_photons(self, h5_file):
+    def get_companion_photons(self, h5_file, timestep=None):
         """
 
         :param h5_file: h5 file in which photons are to be injected
         :return: numpy array of photons
         """
         pt = Photontable(h5_file)
-        intt = self.intt
+        start = pt.metadata()['UNIXSTR']
+        end = pt.metadata()['UNIXEND']
+
         # get companion template where center of the PSF will have counts/s =max_counts
         companion = generate_diffrac_lim_planet(max_counts=self.cps)
         companion = companion.astype(int)
 
-        # give the x and y pixel for where the companion is to be injected
-        print('Processing h5: ' + str(h5_file))
-        x_cen, y_cen = self.find_center_companion(pt)
+        if timestep is None:
+            intt = start - end
+            # give the x and y pixel for where the companion is to be injected
+            print('Processing h5: ' + str(h5_file))
+            x_cen, y_cen = self.find_center_companion(pt)
 
-        # get x and y coordinates for where companion is going to go
-        delt_x = int(np.shape(companion)[0] / 2.0)
-        delt_y = int(np.shape(companion)[1] / 2.0)
-        xmin, xmax = x_cen - delt_x, x_cen + delt_x + 1
-        ymin, ymax = y_cen - delt_y, y_cen + delt_y + 1
+            # get x and y coordinates for where companion is going to go
+            delt_x = int(np.shape(companion)[0] / 2.0)
+            delt_y = int(np.shape(companion)[1] / 2.0)
+            xmin, xmax = x_cen - delt_x, x_cen + delt_x + 1
+            ymin, ymax = y_cen - delt_y, y_cen + delt_y + 1
 
-        companion_image = np.zeros((pt.nXPix, pt.nYPix))
-        diff_x = 140 - xmax
-        diff_y = 146 - ymax
+            companion_image = np.zeros((pt.nXPix, pt.nYPix))
+            diff_x = 140 - xmax
+            diff_y = 146 - ymax
 
-        arr = np.array([xmin, diff_x, ymin, diff_y])
-        if np.all([a > 0 for a in arr]):
-            # companion entirely on array
-            companion_image[xmin:xmax, ymin:ymax] = companion
+            arr = np.array([xmin, diff_x, ymin, diff_y])
+            if np.all([a > 0 for a in arr]):
+                # companion entirely on array
+                companion_image[xmin:xmax, ymin:ymax] = companion
+            else:
+                print('companion partially off array')
+                arr = arr.astype(float)
+                arr[arr < 0] = np.nan
+                # get image bounds
+                xmin_i = xmin if not np.isnan(arr[0]) else 0
+                xmax_i = xmax if not np.isnan(arr[1]) else 140
+                ymin_i = ymin if not np.isnan(arr[2]) else 0
+                ymax_i = ymax if not np.isnan(arr[3]) else 146
+                # get companion bounds
+                xmin = 0 if not np.isnan(arr[0]) else -xmin
+                xmax = np.shape(companion)[0] if not np.isnan(arr[1]) else diff_x
+                ymin = 0 if not np.isnan(arr[2]) else -ymin
+                ymax = np.shape(companion)[1] if not np.isnan(arr[3]) else diff_y
+                companion_image[xmin_i:xmax_i, ymin_i:ymax_i] = companion[xmin:xmax, ymin:ymax]
+            companion_image = companion_image.astype(int)
+            num_photons = np.sum(companion_image * intt)
+            # initialize photon list
+            photons = np.zeros(num_photons.astype(int), dtype=[('resID', np.uint32), ('time', np.uint32),
+                                                            ('wavelength', np.float32), ('weight', np.float32)])
+            tally = 0
+            for (x, y), resID in np.ndenumerate(pt.beamImage):
+                if companion_image[x, y] != 0:
+                    counts = np.ceil(companion_image[x, y] * intt).astype(int)
+                    t_prev = 0
+                    if self.T:
+                        wavelengths = get_BB_dist_wvls(counts, self.T)
+                    else:
+                        wavelengths = np.full(len(counts), 1100)
+                    for i in range(counts):
+                        # create a photon entry for each count with poisson distributed arrival times
+                        pixel_cps = counts/intt
+                        t = t_prev + np.random.poisson(10**6/pixel_cps)
+                        wvl = wavelengths[i]
+                        photons[tally + i] = (resID, t, wvl, 1.0)
+                        t_prev = t
+                    tally += counts
+
+            # close h5 file
+            pt.file.close()
+            return photons
         else:
-            print('companion partially off array')
-            arr = arr.astype(float)
-            arr[arr < 0] = np.nan
-            # get image bounds
-            xmin_i = xmin if not np.isnan(arr[0]) else 0
-            xmax_i = xmax if not np.isnan(arr[1]) else 140
-            ymin_i = ymin if not np.isnan(arr[2]) else 0
-            ymax_i = ymax if not np.isnan(arr[3]) else 146
-            # get companion bounds
-            xmin = 0 if not np.isnan(arr[0]) else -xmin
-            xmax = np.shape(companion)[0] if not np.isnan(arr[1]) else diff_x
-            ymin = 0 if not np.isnan(arr[2]) else -ymin
-            ymax = np.shape(companion)[1] if not np.isnan(arr[3]) else diff_y
-            companion_image[xmin_i:xmax_i, ymin_i:ymax_i] = companion[xmin:xmax, ymin:ymax]
-        companion_image = companion_image.astype(int)
-        num_photons = np.sum(companion_image * intt)
-        # initialize photon list
-        photons = np.zeros(num_photons.astype(int), dtype=[('resID', np.uint32), ('time', np.uint32),
-                                                        ('wavelength', np.float32), ('weight', np.float32)])
-        tally = 0
-        for (x, y), resID in np.ndenumerate(pt.beamImage):
-            if companion_image[x, y] != 0:
-                counts = np.ceil(companion_image[x, y] * intt).astype(int)
-                t_prev = 0
-                if self.T:
-                    wavelengths = get_BB_dist_wvls(counts, self.T)
+            intt = timestep
+            print('Processing h5: ' + str(h5_file))
+            tvals = np.arange(start, end + timestep, timestep)
+            p = []
+
+            for phot_t in tvals:
+                x_cen, y_cen = self.find_center_companion(pt, phot_t)
+                # get x and y coordinates for where companion is going to go
+                delt_x = int(np.shape(companion)[0] / 2.0)
+                delt_y = int(np.shape(companion)[1] / 2.0)
+                xmin, xmax = x_cen - delt_x, x_cen + delt_x + 1
+                ymin, ymax = y_cen - delt_y, y_cen + delt_y + 1
+
+                companion_image = np.zeros((pt.nXPix, pt.nYPix))
+                diff_x = 140 - xmax
+                diff_y = 146 - ymax
+
+                arr = np.array([xmin, diff_x, ymin, diff_y])
+                if np.all([a > 0 for a in arr]):
+                    # companion entirely on array
+                    companion_image[xmin:xmax, ymin:ymax] = companion
                 else:
-                    wavelengths = np.full(len(counts), 1100)
-                for i in range(counts):
-                    # create a photon entry for each count with poisson distributed arrival times
-                    pixel_cps = counts/intt
-                    t = t_prev + np.random.poisson(10**6/pixel_cps)
-                    wvl = wavelengths[i]
-                    photons[tally + i] = (resID, t, wvl, 1.0)
-                    t_prev = t
-                tally += counts
+                    print('companion partially off array')
+                    arr = arr.astype(float)
+                    arr[arr < 0] = np.nan
+                    # get image bounds
+                    xmin_i = xmin if not np.isnan(arr[0]) else 0
+                    xmax_i = xmax if not np.isnan(arr[1]) else 140
+                    ymin_i = ymin if not np.isnan(arr[2]) else 0
+                    ymax_i = ymax if not np.isnan(arr[3]) else 146
+                    # get companion bounds
+                    xmin = 0 if not np.isnan(arr[0]) else -xmin
+                    xmax = np.shape(companion)[0] if not np.isnan(arr[1]) else diff_x
+                    ymin = 0 if not np.isnan(arr[2]) else -ymin
+                    ymax = np.shape(companion)[1] if not np.isnan(arr[3]) else diff_y
+                    companion_image[xmin_i:xmax_i, ymin_i:ymax_i] = companion[xmin:xmax, ymin:ymax]
+                companion_image = companion_image.astype(int)
+                num_photons = np.sum(companion_image * intt)
+                # initialize photon list
+                photons = np.zeros(num_photons.astype(int), dtype=[('resID', np.uint32), ('time', np.uint32),
+                                                                   ('wavelength', np.float32), ('weight', np.float32)])
+                tally = 0
+                for (x, y), resID in np.ndenumerate(pt.beamImage):
+                    if companion_image[x, y] != 0:
+                        counts = np.ceil(companion_image[x, y] * intt).astype(int)
+                        t_prev = (phot_t - tvals[0]) * 10 ** 6
+                        if self.T:
+                            wavelengths = get_BB_dist_wvls(counts, self.T)
+                        else:
+                            wavelengths = np.full(len(counts), 1100)
+                        for i in range(counts):
+                            # create a photon entry for each count with poisson distributed arrival times
+                            pixel_cps = counts / intt
+                            t = t_prev + np.random.poisson(10 ** 6 / pixel_cps)
+                            wvl = wavelengths[i]
+                            photons[tally + i] = (resID, t, wvl, 1.0)
+                            t_prev = t
+                        tally += counts
+                p.append(photons)
 
-        # close h5 file
-        pt.file.close()
-        return photons
+            n_phot = 0
+            for i in p:
+                n_phot += len(i)
+            photons = np.zeros(int(n_phot), dtype=[('resID', np.uint32), ('time', np.uint32),
+                                                               ('wavelength', np.float32), ('weight', np.float32)])
+            tally = 0
+            for i in p:
+                for photon in i:
+                    photons[tally] = photon
+                    tally += 1
 
-    def find_center_companion(self, pt):
+            # close h5 file
+            pt.file.close()
+            return photons
+
+
+    def find_center_companion(self, pt, time=None):
         """
 
         :param pt: Photontable object
@@ -143,7 +243,10 @@ class InjectPlanet:
         """
         # calculate change in pixel location due to the dither
         fn = pt.file.filename
-        idx = self.h5_files.index(fn)
+        if time is None:
+            idx = self.h5_files.index(fn)
+        else:
+            idx = np.where(self.times.astype(int) == int(time))[0][0]
         delta_pix_dith = dither_pixel_vector(pt, center=self.conex_ref)
         rotation_angle = np.deg2rad(self.delta_pas[idx])
         assigned_pa = np.deg2rad(self.pa)
@@ -152,7 +255,7 @@ class InjectPlanet:
         comp_ref_pix = (self.pixel_ref[0] + self.pix_sep*np.sin(apply_angle),
                         self.pixel_ref[1] + self.pix_sep*np.cos(apply_angle))
         x_cen, y_cen = comp_ref_pix + delta_pix_dith
-        print('file: {} injecting companion at location: {}'.format(fn, (x_cen, y_cen)))
+        # print('file: {} injecting companion at location: {}'.format(fn, (x_cen, y_cen)))
         return int(x_cen), int(y_cen)
 
 
@@ -275,22 +378,23 @@ def get_pa_list(times, intt=1, target='', observatory='subaru'):
     :param observatory: str name of the observatory where the observations occurred
     :return:
     """
-    times = np.sort(times)
+    # times = np.sort(times)
     pa_list = []
     coord = SkyCoord.from_name(target)
-    ref = (times[1] - times[0]) / intt
-    ref = int(ref)
-    for i, time in enumerate(times):
-        if i < (len(times) - 1):
-            use_times = np.arange(times[i], times[i + 1], intt)
-        else:
-            use_times = np.arange(times[i], times[i] + ref, intt)
-        if len(use_times) > ref:
-            use_times = use_times[:ref]
-        apo = Observer.at_site(observatory)
-        parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=use_times, format='unix'),
-                                                   coord).value
-        pa_list.append(parallactic_angles)
+    # ref = (times[1] - times[0]) / intt
+    # ref = int(ref)
+    # for i, time in enumerate(times):
+    #     if i < (len(times) - 1):
+    #         use_times = np.arange(times[i], times[i + 1], intt)
+    #     else:
+    #         use_times = np.arange(times[i], times[i] + ref, intt)
+    #     if len(use_times) > ref:
+    #         use_times = use_times[:ref]
+
+    apo = Observer.at_site(observatory)
+    parallactic_angles = apo.parallactic_angle(astropy.time.Time(val=times, format='unix'),
+                                               coord).value
+    pa_list.append(parallactic_angles)
     pa_list = np.rad2deg(np.array(pa_list))
     return np.array(pa_list.flatten())
 
