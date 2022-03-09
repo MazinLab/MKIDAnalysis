@@ -28,22 +28,21 @@ from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 from mkidpipeline.utils import pdfs
 from mkidanalysis.lightCurves import histogramLC
+from mkidanalysis.lucky_imaging import get_lucky
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
 
-
-PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone', 'wavecal.bad',
-                 'wavecal.failed_validation', 'wavecal.failed_convergence', 'wavecal.not_monotonic',
-                 'wavecal.not_enough_histogram_fits', 'wavecal.no_histograms',
-                 'wavecal.not_attempted')
+PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone')
 
 
 class SSDManager:
-    def __init__(self, output=None, fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
-                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None):
+    def __init__(self, output=None, fits_dir='', component_dir='', ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
+                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None, lucky=False):
         self.outputs = [o for o in output]
         self.dataset = output.dataset
         self.names = [o.data.name for o in self.outputs]
+        self.offsets = [o.start_offset for o in self.outputs]
+        self.durations = [o.duration for o in self.outputs]
         self.fits_dir = fits_dir
         self.component_dir = component_dir
         self.ncpu = ncpu
@@ -55,25 +54,29 @@ class SSDManager:
         self.bin_size = bin_size
         self.read_noise = read_noise
         self.deadtime = deadtime
+        self.lucky = lucky
         self.photontables = None
         self.intt = None
 
+
     def run(self):
-        for name in self.names:
+        for i, name in enumerate(self.names):
             h5s = [o.h5 for o in self.dataset.datadict[name].obs]
             self.photontables = [Photontable(h5) for h5 in h5s]
             self.intt = self.photontables[0].query_header('EXPTIME')
             ssd = SSDAnalyzer(h5_files=h5s, fits_dir=self.fits_dir, component_dir=self.component_dir,
                               ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero,
                               binned=self.binned, drizzle=self.drizzle, bin_size=self.bin_size,
-                              read_noise=self.read_noise, deadtime=self.deadtime)
+                              read_noise=self.read_noise, deadtime=self.deadtime, startt=self.offsets[i],
+                              duration=self.durations[i], lucky=self.lucky)
             ssd.run_ssd()
 
 
 class SSDAnalyzer:
     """Class for running binned or binfree SSD analysis on MKID data (calibrated h5 files)"""
-    def __init__(self, h5_files=None, fits_dir='', component_dir='',  ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
-                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None):
+    def __init__(self, h5_files=None, fits_dir='', component_dir='', ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
+                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None, startt=None, duration=None,
+                 lucky=False):
         self.fits_dir = fits_dir
         self.component_dir = component_dir
         self.ncpu = ncpu
@@ -86,8 +89,11 @@ class SSDAnalyzer:
         self.bin_size = bin_size
         self.read_noise = read_noise
         self.deadtime = deadtime
+        self.duration = duration
+        self.startt = startt
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
         self.intt = self.photontables[0].query_header('EXPTIME')
+        self.lucky = lucky
 
     def run_ssd(self):
         """
@@ -99,10 +105,11 @@ class SSDAnalyzer:
         getLogger(__name__).info('Calculating Ic, Ip, and Is')
         calculate_components(self.h5_files, self.component_dir, ncpu=self.ncpu, prior=self.prior,
                              prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero, binned=self.binned,
-                             bin_size=self.bin_size, deadtime=self.deadtime)
+                             bin_size=self.bin_size, deadtime=self.deadtime, startt=self.startt, duration=self.duration,
+                             lucky=self.lucky)
         getLogger(__name__).info('Initializing fits files')
         initialize_fits(self.h5_files, self.fits_dir, ncpu=self.ncpu)
-        if self.binned:
+        if self.binned or self.set_ip_zero:
             component_types = ['Ic', 'Is']
             for i, ct in enumerate(component_types):
                 update_fits(self.component_dir + ct + '/', self.fits_dir, ext=ct)
@@ -206,17 +213,17 @@ def init_fits(fn, out_file_path):
     """
     pt = Photontable(fn)
     with pt.needed_ram():
-        hdu = pt.get_fits(rate=True, exclude_flags=PROBLEM_FLAGS, derotate=True)
+        hdu = pt.get_fits(rate=True, wave_start=700, wave_stop=1500, weight=True, exclude_flags=PROBLEM_FLAGS,
+                          derotate=True)
         hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
         hdu.close()
         getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
 
 
 def calculate_components(fn_list, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False,
-                         bin_size=None, read_noise=0.0, deadtime=None):
+                         bin_size=None, read_noise=0.0, deadtime=None, startt=None, duration=None, lucky=False):
     """
     wrapper for running the binned or binfree SSD code
-
     :param fn_list: list of h5 files
     :param component_dir: location to save the component .npy files
     :param ncpu: number of cpus to use
@@ -231,16 +238,17 @@ def calculate_components(fn_list, component_dir, ncpu=1, prior=None, prior_sig=N
     """
     if binned:
         p = Pool(ncpu)
-        f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise)
+        f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise,
+                    use_lucky=lucky)
         p.map(f, fn_list)
     else:
         p = Pool(ncpu)
         f = partial(binfree_ssd, save=True, save_dir=component_dir, IptoZero=set_ip_zero, prior=prior,
-                    prior_sig=prior_sig, deadtime=deadtime)
+                    prior_sig=prior_sig, deadtime=deadtime, startt=startt, duration=duration, use_lucky=lucky)
         p.map(f, fn_list)
 
 
-def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_noise=0.0):
+def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_noise=0.0, use_lucky=True):
     """
     function for running binned SSD
 
@@ -260,11 +268,17 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
         return
     bar = ProgressBar(maxval=20439).start()
     bari = 0
+
+    if use_lucky:
+        use_cubes = lucky_images(pt, bin_size)
     with pt.needed_ram():
         for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
             ts = pt.query(pixel=pix, column='time')
             if len(ts) > 0:
-                lc_counts, lc_intensity, lc_times = getLightCurve(ts/10**6, effExpTime=bin_size)
+                if use_lucky:
+                    lc_counts = np.array([int(c[pix[0], pix[1]]) for c in use_cubes])
+                else:
+                    lc_counts, lc_intensity, lc_times = getLightCurve(ts / 10 ** 6, effExpTime=bin_size)
                 mu = np.mean(lc_counts)
                 var = np.var(lc_counts)
                 if read_noise and read_noise !=0:
@@ -301,7 +315,8 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
     return Ic_image, Is_image
 
 
-def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext='', deadtime=None):
+def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext='', deadtime=None,
+                use_lucky=True, startt=None, duration=None):
     """
     Runs the binfree SSD
     :param fn: file to run binned SSD on
@@ -325,14 +340,31 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
     if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
         getLogger(__name__).info('Ic, Is, and Ip already calculated for {}'.format(fn))
         return
+    if use_lucky:
+        use_ranges = get_lucky(pt, 20, 40, startt=startt, duration=duration, bin_width=0.02, percent_best=0.1)
     bar = ProgressBar(maxval=20439).start()
     bari = 0
     for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
-        ts = pt.query(pixel=pix, column='time')
-        ts = np.sort(ts)
-        dt = np.diff(ts) / 1e6
+        if use_lucky:
+            dt = []
+            for i, range in enumerate(use_ranges):
+                ts = pt.query(start=range[0], stopt=range[1], pixel=pix, column='time')
+                dt.append(np.diff(np.sort(ts)) / 1e6)
+        else:
+            ts = pt.query(start=startt, intt=duration, pixel=pix, column='time')
+            ts = np.sort(ts)
+            dt = np.diff(ts) / 1e6
         if deadtime:
-            dt = np.array([t for t in dt if t > deadtime])
+            new_dt = []
+            for it, t in enumerate(dt):
+                try:
+                    if t < deadtime:
+                        new_dt.append(t + dt[it + 1])
+                    else:
+                        new_dt.append(t)
+                except IndexError:
+                    pass
+            dt = np.array(new_dt)
         if prior:
             use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
             use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0],
@@ -481,7 +513,7 @@ def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], a
     """
     for a given 3D data array will plot the count rate histograms and perform a modified rician fit
     :param data: 3D data array
-    :param object_name: str name of the object
+    :param object_name: str name of the objectget
     :param axes: axes on which to make the plot
     :param fit_poisson: if True will fit a poisson distribution to the histogram in addiiton to a MR
     :return: matplotlib Axes object
@@ -574,3 +606,25 @@ def mr_hist_summary_plot(cube, object_location, field_location, box_size=2, N=40
     plt.savefig(save_dir + 'mr_summary.pdf')
 
 
+def lucky_images(pt, bin_size):
+    """
+
+    :param pt:
+    :param bin_size:
+    :return:
+    """
+    plt.clf()
+    temporal_cube = pt.get_fits(cube_type='time', bin_width=bin_size, rate=False)[1].data
+    median_flux = np.median(np.sum(temporal_cube, axis=(1, 2)))
+    plt.hist(np.sum(temporal_cube, axis=(1, 2)), bins=20, histtype='step')
+    std = np.std(np.sum(temporal_cube, axis=(1, 2)))
+    plt.axvline(x=median_flux, color='r', linestyle='--')
+    # plt.savefig('/data/steiger/MEC/20220222/SSD/HIP36152/binned_20ms_lucky/test.pdf')
+    use_cubes = []
+    for i, cube in enumerate(temporal_cube):
+        if np.sum(cube) > std + median_flux:
+            # if np.sum(cube) > median_flux:
+            continue
+        else:
+            use_cubes.append(cube)
+    return use_cubes
