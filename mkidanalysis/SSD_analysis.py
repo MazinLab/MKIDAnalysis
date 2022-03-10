@@ -32,7 +32,7 @@ from mkidanalysis.lucky_imaging import get_lucky
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
 
-PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone')
+PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone', 'wavecal.bad')
 
 
 class SSDManager:
@@ -266,9 +266,9 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
     if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
         getLogger(__name__).info('Ic and Is already calculated for {}'.format(fn))
         return
-    bar = ProgressBar(maxval=20439).start()
+    num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
+    bar = ProgressBar(maxval=num_pix).start()
     bari = 0
-
     if use_lucky:
         use_cubes = lucky_images(pt, bin_size)
     with pt.needed_ram():
@@ -342,29 +342,22 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
         return
     if use_lucky:
         use_ranges = get_lucky(pt, 20, 40, startt=startt, duration=duration, bin_width=0.02, percent_best=0.1)
-    bar = ProgressBar(maxval=20439).start()
+    num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
+    bar = ProgressBar(maxval=num_pix).start()
     bari = 0
     for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
         if use_lucky:
-            dt = []
+            dt = np.array([])
             for i, range in enumerate(use_ranges):
-                ts = pt.query(start=range[0], stopt=range[1], pixel=pix, column='time')
-                dt.append(np.diff(np.sort(ts)) / 1e6)
+                ts = pt.query(start=range[0], stopt=range[1], resid=resID, column='time')
+                dt_new = np.diff(np.sort(ts)) / 1e6
+                dt = np.append(dt, dt_new)
         else:
-            ts = pt.query(start=startt, intt=duration, pixel=pix, column='time')
+            ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
             ts = np.sort(ts)
             dt = np.diff(ts) / 1e6
-        if deadtime:
-            new_dt = []
-            for it, t in enumerate(dt):
-                try:
-                    if t < deadtime:
-                        new_dt.append(t + dt[it + 1])
-                    else:
-                        new_dt.append(t)
-                except IndexError:
-                    pass
-            dt = np.array(new_dt)
+        if deadtime and len(dt) > 0:
+            dt = np.array([t if t > deadtime else t + dt[i + 1] for (i, t) in enumerate(dt)])
         if prior:
             use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
             use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0],

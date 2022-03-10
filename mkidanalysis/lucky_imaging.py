@@ -52,8 +52,8 @@ def get_time_dict(pt, r_in, r_out, startt=0, duration=None, bin_width=0.02):
     ref_pix = (pt.query_header('E_PREFX'), pt.query_header('E_PREFY'))
     ref_con = (pt.query_header('E_CXREFX'), pt.query_header('E_CXREFY'))
     center = CONEX2PIXEL(x_con, y_con, slopes, ref_pix=ref_pix, ref_con=ref_con)
-    t_cube = pt.get_fits(start=startt, duration=duration, bin_type='time', cube_type='time', bin_width=bin_width)[
-        1].data
+    t_cube = pt.get_fits(start=startt, duration=duration, bin_type='time', cube_type='time',
+                         bin_width=bin_width)[1].data
     flux_dict = get_fluxes(t_cube, r_in, r_out, bin_width, center=center)
     return flux_dict
 
@@ -79,5 +79,4 @@ def get_lucky(pt, r_in, r_out, startt=0, duration=None, bin_width=0.02, percent_
             times.append(val)
         else:
             pass
-    print(len(times))
     return times
