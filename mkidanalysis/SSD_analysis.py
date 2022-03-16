@@ -141,8 +141,11 @@ class SSDAnalyzer:
         :return: None
         """
         fits_files = [self.fits_dir + h5[-13:-3] + '.fits' for h5 in self.h5_files]
-        target = fits.open(fits_files[0])[0].header['OBJECT']
-        ref_wcs = get_canvas_wcs(target)
+        hdr = fits.open(fits_files[0])[0].header
+        target = hdr['OBJECT']
+        coords = SkyCoord(hdr['CRVAL1'], hdr['CRVAL2'], unit='deg')
+        pltscl = hdr['E_PLTSCL']
+        ref_wcs = get_canvas_wcs(target, coords=coords, platescale=pltscl)
         driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5, wt_scl='')
         for i, infile in enumerate(fits_files):
             try:
@@ -341,15 +344,17 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
         getLogger(__name__).info('Ic, Is, and Ip already calculated for {}'.format(fn))
         return
     if use_lucky:
-        use_ranges = get_lucky(pt, 20, 40, startt=startt, duration=duration, bin_width=0.02, percent_best=0.1)
+        use_ranges = get_lucky(pt, 15, 30, startt=startt, duration=duration, bin_width=0.1, percent_best=0.3)
     num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
     bar = ProgressBar(maxval=num_pix).start()
     bari = 0
     for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
         if use_lucky:
+            all_ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
             dt = np.array([])
             for i, range in enumerate(use_ranges):
-                ts = pt.query(start=range[0], stopt=range[1], resid=resID, column='time')
+                idxs = np.where(np.logical_and(all_ts > range[0] * 1e6, all_ts < range[1] * 1e6))[0]
+                ts = all_ts[idxs]
                 dt_new = np.diff(np.sort(ts)) / 1e6
                 dt = np.append(dt, dt_new)
         else:
@@ -357,7 +362,7 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
             ts = np.sort(ts)
             dt = np.diff(ts) / 1e6
         if deadtime and len(dt) > 0:
-            dt = np.array([t if t > deadtime else t + dt[i + 1] for (i, t) in enumerate(dt)])
+            dt = np.array([t if t > deadtime else t + dt[i + 1] for (i, t) in enumerate(dt[:-1])])
         if prior:
             use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
             use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0],
@@ -440,17 +445,19 @@ def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
         return axes
 
 
-def get_canvas_wcs(target):
+def get_canvas_wcs(target, coords=None, platescale=None):
     npixx = 500
     npixy = 500
-    coords = SkyCoord.from_name(target)
+    if coords is None:
+        coords = SkyCoord.from_name(target)
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = np.array([npixx/2., npixy/2.])
     wcs.wcs.crval = [coords.ra.deg, coords.dec.deg]
     wcs.wcs.ctype = ["RA--TAN", "DEC-TAN"]
     wcs.pixel_shape = (npixx, npixy)
     wcs.wcs.pc = np.eye(2)
-    wcs.wcs.cdelt = [2.888888889e-06, 2.88888889e-06] #corresponds to a 10.4 mas platescale
+    wcs.wcs.cdelt = [platescale, platescale] if platescale else [2.888e-6,
+                                                                 2.888e-6]  # corresponds to a 10.4 mas platescale
     wcs.wcs.cunit = ["deg", "deg"]
     getLogger(__name__).debug(wcs)
     return wcs

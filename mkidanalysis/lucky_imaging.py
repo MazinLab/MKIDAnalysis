@@ -40,9 +40,12 @@ def get_fluxes(frames, r_in, r_out, bin_width, center=None):
     flux_dict = {}
     for i, frame in enumerate(frames):
         flux = flux_in_annulus(frame, r_in, r_out, center=center)
-        startt = bin_width * i
-        stopt = bin_width * (i + 1)
-        flux_dict[flux] = (startt, stopt)
+        if np.isnan(flux):
+            pass
+        else:
+            startt = bin_width * i
+            stopt = bin_width * (i + 1)
+            flux_dict[flux] = (startt, stopt)
     return flux_dict
 
 
