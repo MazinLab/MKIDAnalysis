@@ -31,12 +31,10 @@ def gamma_icdf(sr, Ip, gam=None, bet=None, alph=None, interpmethod='cubic'):
     sig = 0.01  # TODO figure out
 
     I1 = max(0, mu - 15 * sig)
-    I2 = mu + 15 * sig
-    # I = np.linspace(I1, I2, 1000)
-    I = np.linspace(0.7, 1.0, 1000)
+    I2 = mu + 15 * sig if mu + 15 * sig < 1. else 1.
+    I = np.linspace(I1, I2, 1000)
     p_I = (1. / (2 * np.sqrt(I))) * (p_A(np.sqrt(I), gam=gam, alph=alph, bet=bet) +
                                      p_A(-np.sqrt(I), gam=-(1 - gam), alph=alph, bet=bet))
-    p_I *= Ip
     I *= Ip
 
     dI = I[1] - I[0]
@@ -147,7 +145,7 @@ def corrsequence(Ttot, tau):
 
 
 def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
-                  taufac=500, return_IDs=False):
+                  taufac=500, return_IDs=False, mean_strehl=0.8):
     """
     Generate a photon list from an input Ic, Is with an arbitrary
     photon rate.  All times are measured in seconds or inverse
@@ -201,12 +199,16 @@ def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
         raise ValueError("Cannot generate a photon list with Is<0.")
 
     if Ir > 1e-6:
+        if mean_strehl is None:
+            mean_strehl = 0.8
         uni = np.random.normal(0, 1, int(Ttot * 1e6 / N))
         uniform = 0.5 * (special.erf(uni / np.sqrt(2)) + 1)
-        gam = 0
-        bet = 50
+        # threshold
+        gam = (1 - mean_strehl) / 2 if mean_strehl != 1 else 0
+        # mean rate of occurance
+        bet = N
         alph = 1.5
-        f = gamma_icdf(0.9, Ir, gam=gam, bet=bet, alph=alph, interpmethod=interpmethod)
+        f = gamma_icdf(mean_strehl, Ir, gam=gam, bet=bet, alph=alph, interpmethod=interpmethod)
         I_comp = f(uniform) / 1e6
     else:
         I_comp = np.ones(t.shape) * Ir / 1e6
