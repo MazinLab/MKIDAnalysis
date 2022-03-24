@@ -123,8 +123,10 @@ def optimize_IcIsIr2(dt, guessParams=[-1,-1,-1], deadtime=1.e-5, method='Newton-
     hess = lambda p: _posterior_hessian(p, dt=dt, deadtime=deadtime, prior=prior, prior_sig=prior_sig)
 
     ip_bound = [0,0] if forceIp2zero else [0, np.inf]
-    res = minimize(loglike, guessParams, method='trust-constr',bounds=[[1.e-15,np.inf], [1.e-15, np.inf], ip_bound], jac=score, hess=hess, **kwargs)
+    res = minimize(loglike, guessParams, method=method, bounds=[[1.e-15, np.inf], [1.e-15, np.inf], ip_bound],
+                   jac=score, hess=hess, **kwargs)
     return res
+
 
 def optimize_IcIsIr(dt, guessParams=[-1,-1,-1], deadtime=1.e-5, method='nm', prior=[np.nan]*3, prior_sig=[np.nan]*3, **kwargs):
     """
