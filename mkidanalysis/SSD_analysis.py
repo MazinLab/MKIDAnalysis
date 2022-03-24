@@ -29,6 +29,7 @@ from astropy.coordinates import SkyCoord
 from mkidpipeline.utils import pdfs
 from mkidanalysis.lightCurves import histogramLC
 from mkidanalysis.lucky_imaging import get_lucky
+import astropy.units as u
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
 
@@ -145,6 +146,10 @@ class SSDAnalyzer:
         target = hdr['OBJECT']
         coords = SkyCoord(hdr['CRVAL1'], hdr['CRVAL2'], unit='deg')
         pltscl = hdr['E_PLTSCL']
+        if pltscl < 1e-4:
+            pass
+        else:
+            pltscl = (pltscl * u.arcsec).to(u.deg).value
         ref_wcs = get_canvas_wcs(target, coords=coords, platescale=pltscl)
         driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5, wt_scl='')
         for i, infile in enumerate(fits_files):
@@ -180,6 +185,7 @@ class SSDAnalyzer:
                 cps[np.isnan(cps)] = 0
                 image_wcs = WCS(imlist[0].header)
                 image_wcs.pixel_shape = (146, 140)
+                # TODO actually get cps in counts/s - divide by effective inttime
                 driz.add_image(cps.T, inwcs=image_wcs, in_units='cps', inwht=weight_arr)
             except ValueError:
                 pass
@@ -297,7 +303,7 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
                 except ValueError:
                     IIc = mu / 2  # just create a reasonable seed
                     IIs = mu - IIc
-                Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs)
+                Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs, effExpTime=bin_size)
                 Ic_image[pix[0]][pix[1]] = Ic
                 Is_image[pix[0]][pix[1]] = Is
             else:
@@ -316,7 +322,6 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
             np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
             np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
     return Ic_image, Is_image
-
 
 def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext='', deadtime=None,
                 use_lucky=True, startt=None, duration=None):
