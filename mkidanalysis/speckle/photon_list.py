@@ -21,11 +21,11 @@ import os, glob, uuid
 import time
 import multiprocessing, threading
 
-from mkidpipeline.speckle.generate_photons import genphotonlist
+from mkidanalysis.speckle.generate_photons import genphotonlist
 
-import mkidpipeline.speckle.generate_photons as gpl
-import mkidpipeline.speckle.binned_rician as binMR
-import mkidpipeline.speckle.oracle_speckle_functions as binfree
+import mkidanalysis.speckle.generate_photons as gpl
+import mkidanalysis.speckle.binned_rician as binMR
+# import mkidanalysis.speckle.oracle_speckle_functions as binfree
 from scipy import optimize, integrate
 import pickle
 
@@ -817,7 +817,7 @@ class mock_photonlist:
         self.tau = tau
         self.deadtime = deadtime
         np.random.seed()  # need this when making many mock_photonlists simultaneously with multiprocessing
-        self.ts, self.ts_star, _ = genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime * 10. ** 6., return_IDs=True)
+        self.ts, self.ts_star, _ = genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=deadtime * 1e6, return_IDs=True)
         self.dt = (self.ts[1:] - self.ts[:-1]) * 1e-6
         self.dt_star = (self.ts_star[1:] - self.ts_star[:-1]) * 1e-6
 
