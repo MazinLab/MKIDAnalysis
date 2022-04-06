@@ -7,6 +7,53 @@ import mkidpipeline.speckle.photonstats_utils as utils
 from astropy.convolution import Gaussian2DKernel, convolve
 from mkidpipeline.photontable import Photontable
 import tables
+from scipy.stats import gamma
+
+
+def p_A(x, gam=None, bet=None, alph=None):
+    pdf = gamma.pdf(x, alph, loc=gam, scale=1 / bet)
+    return pdf
+
+
+def gamma_icdf(sr, Ip, gam=None, bet=None, alph=None, interpmethod='cubic'):
+    """
+
+    :param sr: MEAN value of the strehl ratio
+    :param Ip:
+    :param gam:
+    :param bet:
+    :param alph:
+    :param interpmethod:
+    :return:
+    """
+    # compute mean and variance of gamma distribution
+    mu = sr
+    sig = 0.01  # TODO figure out
+
+    I1 = max(0, mu - 15 * sig)
+    I2 = mu + 15 * sig if mu + 15 * sig < 1. else 1.
+    I = np.linspace(I1, I2, 1000)
+    p_I = (1. / (2 * np.sqrt(I))) * (p_A(np.sqrt(I), gam=gam, alph=alph, bet=bet) +
+                                     p_A(-np.sqrt(I), gam=-(1 - gam), alph=alph, bet=bet))
+    I *= Ip
+
+    dI = I[1] - I[0]
+    I += dI / 2
+
+    cdf = np.cumsum(p_I) * dI
+    cdf /= cdf[-1]
+
+    # The integral is defined with respect to the bin edges.
+
+    I = np.asarray([0] + list(I + dI / 2))
+    cdf = np.asarray([0] + list(cdf))
+
+    # The interpolation scheme doesn't want duplicate values.  Pick
+    # the unique ones, and then return a function to compute the
+    # inverse of the CDF.
+
+    i = np.unique(cdf, return_index=True)[1]
+    return interpolate.interp1d(cdf[i], I[i], kind=interpmethod)
 
 
 def MRicdf(Ic, Is, interpmethod='cubic'):
@@ -98,7 +145,7 @@ def corrsequence(Ttot, tau):
 
 
 def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
-                  taufac=500, return_IDs=False):
+                  taufac=500, return_IDs=False, mean_strehl=0.8):
     """
     Generate a photon list from an input Ic, Is with an arbitrary
     photon rate.  All times are measured in seconds or inverse
@@ -144,7 +191,6 @@ def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
         t *= N
         f = MRicdf(Ic, Is, interpmethod=interpmethod)
         I = f(uniform) / 1e6
-
     elif Is >= 0:
         N = max(N, 1000)
         t = np.arange(int(Ttot * 1e6))
@@ -152,10 +198,27 @@ def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
     else:
         raise ValueError("Cannot generate a photon list with Is<0.")
 
+    if Ir > 1e-6:
+        if mean_strehl is None:
+            mean_strehl = 0.8
+        uni = np.random.normal(0, 1, int(Ttot * 1e6 / N))
+        uniform = 0.5 * (special.erf(uni / np.sqrt(2)) + 1)
+        # threshold
+        gam = (1 - mean_strehl) / 2 if mean_strehl != 1 else 0
+        # mean rate of occurance
+        bet = N
+        alph = 1.5
+        f = gamma_icdf(mean_strehl, Ir, gam=gam, bet=bet, alph=alph, interpmethod=interpmethod)
+        I_comp = f(uniform) / 1e6
+    else:
+        I_comp = np.ones(t.shape) * Ir / 1e6
+
     # Number of photons from each distribution in each time bin
 
     n1 = np.random.poisson(I * N)
-    n2 = np.random.poisson(np.ones(t.shape) * Ir / 1e6 * N)
+    n2 = np.random.poisson(I_comp * N)
+    # n2 = np.random.poisson(np.ones(t.shape) * Ir / 1e6 * N)
+
 
     # Go ahead and make the list with repeated times
 
