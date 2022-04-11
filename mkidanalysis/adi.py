@@ -372,41 +372,68 @@ def generate_relative_times(duration, start_offset, timestep):
 
 
 if __name__ == "__main__":
-    from astropy.io import fits
-    import matplotlib.pyplot as plt
+    # NOTE: Some of the code to generate angles and times in this example can also be handled in the ADI class
 
+    targ = 'Hip 36152'  # Name of the target
+
+    # Frames to use (e.g. if you have a 100-frame temporal cube and want to use the middle 20 frames, st=40, end=60,
+    # if you want to use the whole range, st=0, end=len(temporal cube))
+    st = 0
+    end = 70
+
+    cfg_path = '/home/nswimmer/mkidwork/20220222/'  # path to config yaml files
+    f = fits.open('/work/nswimmer/20220222/out/hip36152_dither0/hip36152_dither0_adi_out_drizzle.fits')  # name of the fits cube (or the file with the 3D, temporal cube)
+    obs_id_string = 'hip36152_'  # see line 399, this will populate the 'times' array with values from the desired obs
+    dwell_stept = 15  # duration (in s) of the dwell steps if using a dither
+
+    target = f[0].header['OBJECT']
     # Read in the dither data (only necessary if you want to directly use the times from the metadata
-    cfg_path = '/home/nswimmer/mkidwork/20211016/'
-    pipe_cfg = cfg_path+'pipe.yaml'
-    out_cfg = cfg_path+'out.yaml'
-    data_cfg = cfg_path+'data.yaml'
+    pipe_cfg = cfg_path + 'pipe.yaml'
+    out_cfg = cfg_path + 'out.yaml'
+    data_cfg = cfg_path + 'data.yaml'
     mkc.configure_pipeline(pipe_cfg)
     o = mkd.MKIDOutputCollection(out_cfg, datafile=data_cfg)
     d = o.dataset
 
-    # Read the middle time from each frame
-    times = [np.average([i.start, i.stop]) for i in d.all_observations if 'dither_0' in i.name]
+    # Generate a list of times to use, accounts for if you use a time that is different than the dwell step time
+    times = np.array([[i.start, i.stop] for i in d.all_observations if obs_id_string in i.name])
+    rt = generate_relative_times(dwell_stept, f[0].header['CRVAL3'], f[0].header['CDELT3'])
+    tvals = np.array([[i[0] + rt] for i in times])
+    tvals = tvals.flatten()
 
-    # Load in an ADI cube. In this case, a temporal drizzle where each frame is 1 dither step. The drizzler has already
-    # moved the center of the target to the center of each frame
-    adi_cube = fits.open('/work/nswimmer/20211016/out/hip99770_dither_0/hip99770_dither_0_longwcs_drizzle.fits')[1].data
+    adi_cube = f[1].data
 
-    # Add a 'planet' 15 pixels from the center with 30cps in each pixel it covers
-    # Comment out if not needed
-    adi_cube = add_planet(adi_cube, 15, validate_science_target("Hip 99770", times)['angles'], 30)[1]
+    # Generate a list of position angles for the target at each time.
+    fpa = validate_science_target(target, tvals)['angles']
+    # For reporting, generate a list of angles in degrees that ranges from 0 < theta < 360 (instead of -180 < theta < 180)
+    fpa_deg = np.rad2deg(fpa)
+    for i in range(len(fpa_deg)):
+        if fpa_deg[i] < 0:
+            fpa_deg[i] += 360
 
-    # One method for normalizing each frame in the adi cube. Useful if there are wild changes in brightness over the
-    # duration of the observation (e.g. a cloud went in front of the telescope)
-    # Comment out if not needed
-    # adi_cube_norm = np.array([img_norm(im) for im in adi_cube])
+    adi = ADI(adi_cube[st:end], target, angles=np.rad2deg(fpa[st:end]), times=tvals[st:end], flip_frames_y=True)
+    # out = adi.run(**{'mode':'annular'})
+    out = adi.run(**{'mode': 'annular', 'radius_int': 5})
+    # outs = adi.run()
+    outs = adi.run(**{'radius_int': 5})
 
-    # Initialize ADI
-    a = ADI("Hip 99770", np.copy(adi_cube), times=times, flip_frames_y=True)
+    plt.figure()
+    plt.title(target + ' ADI - ($\Delta$PA=' + f'{abs(fpa_deg[end] - fpa_deg[st]):.2f}' + '$^{\circ}$)\n Annular Mode')
+    plt.imshow(np.fliplr(out['final_res']))
+    # plt.clim(-30,150)
+    plt.colorbar()
 
-    # Run ADI using 'full frame' method ('classic' ADI) or 'annular', which uses full frame in addition to a localized
-    # annulus PSF reference for improved noise reduction. Can be run with any number of different keywords as specified
-    # from the VIP ADI median_sub function (https://vip.readthedocs.io/en/latest/_modules/vip_hci/medsub/medsub_source.html#median_sub)
-    # NOTE: Each time the algorithm is re-run, the reference PSF is recalculated (it will not change if you do not modify
-    # the ADI cube.
-    out1 = a.run(**{'radius_int': 12})
-    out2 = a.run(**{'mode':'annular', 'radius_int': 12})
+    plt.figure()
+    plt.title(
+        target + ' ADI - ($\Delta$PA=' + f'{abs(fpa_deg[end] - fpa_deg[st]):.2f}' + '$^{\circ}$)\n Full Frame Mode')
+    plt.imshow(np.fliplr(outs['final_res']))
+    # plt.clim(-25,80)
+    plt.colorbar()
+
+    plt.figure()
+    plt.title('1.5s frame - ' + target)
+    plt.imshow(adi_cube[np.random.randint(st, end)])
+    # plt.clim(0, 1000)
+    plt.colorbar()
+
+    plt.show()
