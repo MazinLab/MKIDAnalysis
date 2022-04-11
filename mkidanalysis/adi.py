@@ -143,8 +143,9 @@ class ADI():
                 t_delta = header['CDELT3']
                 t_offset = header['CRVAL3']
 
-                frames_per_dwell = (dwell_time - t_offset) / t_delta
-                rts = [t_offset + i * t_delta for i in frames_per_dwell]
+                # frames_per_dwell = (dwell_time - t_offset) / t_delta
+                # rts = [t_offset + i * t_delta for i in frames_per_dwell]
+                rts = generate_relative_times(dwell_time, t_offset, t_delta)
                 rts.append(dwell_time)
                 rts = np.array(rts)
                 relative_times = (rts[:-1] + rts[1:]) / 2
@@ -267,6 +268,7 @@ class ADI():
     #    kwgs = ', '.join([f'{kwarg}={val}' for kwarg, val in self.kwargs.items()])
     #    obs_times = f'obs_start={self.obs_start}, obs_end={self.obs_end}'
     #    return f'({obs_times}, full_output={self.full_output}, {kwgs})'
+
 
 def validate_science_target(target, times=None, deltat=None, startt=None, stopt=None):
     """
