@@ -1,4 +1,9 @@
 """
+VIP GitHub repo: https://github.com/vortex-exoplanet/VIP
+PyPI Site: https://pypi.org/project/vip-hci/
+
+TODO: Update VIP version in environment and handle refactoring
+
 TODO: Auto-trim sizes so that they are all the same?
 
 TODO: Add a rate to the  validate_science_target() method (probably in deg/s) to further specify the best regions (in
@@ -230,7 +235,7 @@ class ADI():
 
         Inputs:
             kwargs that are valid for tuning the VIP median_sub function. See docs:
-            https://vip.readthedocs.io/en/latest/vip_hci.medsub.html?highlight=adi#
+            https://github.com/vortex-exoplanet/VIP/blob/master/vip_hci/psfsub/medsub.py
 
         Returns: 
             out_cube: as-is (no-derotation), post-ADI cube
