@@ -30,6 +30,9 @@ from mkidpipeline.utils import pdfs
 from mkidanalysis.lightCurves import histogramLC
 from mkidanalysis.lucky_imaging import get_lucky
 import astropy.units as u
+from mkidcore.instruments import CONEX2PIXEL
+from mkidpipeline.utils.snr import get_num_apertures, get_aperture_center
+
 warnings.filterwarnings("ignore")
 getLogger().setLevel('INFO')
 
@@ -38,12 +41,14 @@ PROBLEM_FLAGS = ('pixcal.hot', 'pixcal.cold', 'pixcal.dead', 'beammap.noDacTone'
 
 class SSDManager:
     def __init__(self, output=None, fits_dir='', component_dir='', ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
-                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None, lucky=False):
+                 binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None, lucky=False,
+                 adi_mode=False):
         self.outputs = [o for o in output]
         self.dataset = output.dataset
         self.names = [o.data.name for o in self.outputs]
         self.offsets = [o.start_offset for o in self.outputs]
         self.durations = [o.duration for o in self.outputs]
+        self.timesteps = [o.timestep for o in self.outputs]
         self.fits_dir = fits_dir
         self.component_dir = component_dir
         self.ncpu = ncpu
@@ -58,7 +63,7 @@ class SSDManager:
         self.lucky = lucky
         self.photontables = None
         self.intt = None
-
+        self.adi_mode = adi_mode
 
     def run(self):
         for i, name in enumerate(self.names):
@@ -69,7 +74,8 @@ class SSDManager:
                               ncpu=self.ncpu, prior=self.prior, prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero,
                               binned=self.binned, drizzle=self.drizzle, bin_size=self.bin_size,
                               read_noise=self.read_noise, deadtime=self.deadtime, startt=self.offsets[i],
-                              duration=self.durations[i], lucky=self.lucky)
+                              duration=self.durations[i], lucky=self.lucky, timestep=self.timesteps[i],
+                              adi_mode=self.adi_mode)
             ssd.run_ssd()
 
 
@@ -77,7 +83,7 @@ class SSDAnalyzer:
     """Class for running binned or binfree SSD analysis on MKID data (calibrated h5 files)"""
     def __init__(self, h5_files=None, fits_dir='', component_dir='', ncpu=1, prior=None, prior_sig=None, set_ip_zero=False,
                  binned=True, drizzle=True, bin_size=0.01, read_noise=None, deadtime=None, startt=None, duration=None,
-                 lucky=False):
+                 lucky=False, timestep=None, adi_mode=False):
         self.fits_dir = fits_dir
         self.component_dir = component_dir
         self.ncpu = ncpu
@@ -95,142 +101,126 @@ class SSDAnalyzer:
         self.photontables = [Photontable(h5) for h5 in self.h5_files]
         self.intt = self.photontables[0].query_header('EXPTIME')
         self.lucky = lucky
+        self.timestep = timestep
+        self.data = None
+        self.adi_mode = adi_mode
+        self.ic_cube = None
+        self.is_cube = None
+        self.ip_cube = None 
 
     def run_ssd(self):
         """
-        runs the SSD code on every h5 file in the h5_files. Creates fits files which are saved in the fits_dir
-        and adds the Ic, Is, and Ip images onto the end of the fits file.
-
-        Also saves a drizzled Ic, Is, and Ip image in the fits_dir if drizzle=True.
+        Runs SSD code for all outputs in the specified ou.yaml file adhering to specified durations, timesteps, and
+        starttimes. Saves outputs in the component_dir and fits files in fits_dir
+        :return:
         """
         getLogger(__name__).info('Calculating Ic, Ip, and Is')
-        calculate_components(self.h5_files, self.component_dir, ncpu=self.ncpu, prior=self.prior,
-                             prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero, binned=self.binned,
-                             bin_size=self.bin_size, deadtime=self.deadtime, startt=self.startt, duration=self.duration,
-                             lucky=self.lucky)
-        getLogger(__name__).info('Initializing fits files')
-        initialize_fits(self.h5_files, self.fits_dir, ncpu=self.ncpu)
-        if self.binned or self.set_ip_zero:
-            component_types = ['Ic', 'Is']
-            for i, ct in enumerate(component_types):
-                update_fits(self.component_dir + ct + '/', self.fits_dir, ext=ct)
-        else:
-            component_types = ['Ic', 'Is', 'Ip']
-            for i, ct in enumerate(component_types):
-                update_fits(self.component_dir + ct + '/', self.fits_dir, ext=ct)
+        self.data = calculate_components(self.h5_files, self.component_dir, ncpu=self.ncpu, prior=self.prior,
+                                         prior_sig=self.prior_sig, set_ip_zero=self.set_ip_zero, binned=self.binned,
+                                         bin_size=self.bin_size, deadtime=self.deadtime, startt=self.startt,
+                                         duration=self.duration, lucky=self.lucky, timestep=self.timestep,
+                                         adi_mode=self.adi_mode)
         if self.drizzle:
             getLogger(__name__).info(f'Creating and saving component drizzles in {self.fits_dir}')
-            self.save_drizzles()
+            if self.binned:
+                components = ['ic_image', 'is_image']
+            else:
+                components = ['ic_image', 'is_image', 'ip_image']
+            for i, component in enumerate(components):
+                self.drizzle_components(component=component)
+            self.write_fits(self.fits_dir)
 
-    def save_drizzles(self):
-        """wrapper for drizzle_components"""
-        if self.binned or self.set_ip_zero:
-            components = ['Ic', 'Is', 'SCIENCE']
-        else:
-            components = ['Ic', 'Is', 'Ip', 'SCIENCE']
-        for ct in components:
-            self.drizzle_components(plot_type=ct)
-
-    def drizzle_components(self, plot_type='Ic'):
+    def write_fits(self, fits_dir, overwrite=True):
         """
-        plots and saves the result of running each of the Ic, Is, (and Ip if relevant) frames through the Drizzle
-        algorithm. Files are saved in a fits file format in self.fits_dir
-
-        https://github.com/spacetelescope/drizzle
-
-        :param plot_type: component type to drizzle - 'Ic', 'Is', or 'Ip'
-        :return: None
+        Writes and saves output fits files which will be either two dimensional (if timestep=0) or three dimensional
+        with a time axis if timestep > 0. Temporal cibes are designed to interface with ADI if desired
+        :param fits_dir: str, directory to save fits files to
+        :param overwrite: bool, if True will overwrite existing fits file in the fits_dir
+        :return:
         """
-        fits_files = [self.fits_dir + h5[-13:-3] + '.fits' for h5 in self.h5_files]
-        hdr = fits.open(fits_files[0])[0].header
-        target = hdr['OBJECT']
-        coords = SkyCoord(hdr['CRVAL1'], hdr['CRVAL2'], unit='deg')
-        pltscl = hdr['E_PLTSCL']
-        if pltscl < 1e-4:
-            pass
+        if self.timestep and not self.binned:
+            cubes = [self.ic_cube, self.is_cube, self.ip_cube]
+            components = ['Ic', 'Is', 'Ip']
+            for i, cube in enumerate(cubes):
+                hdul = fits.HDUList([fits.PrimaryHDU()])
+                for j, data in enumerate(cube):
+                    hdul.append(fits.ImageHDU(name='cps', data=data))
+                hdul.writeto(fits_dir + components[i] + '_drizzle', overwrite=overwrite)
+                print(('FITS file {} saved'.format(fits_dir + components[i] + '_drizzle')))
+        elif not self.binned:
+            cubes = [np.sum(self.ic_cube, axis=0), np.sum(self.is_cube, axis=0), np.sum(self.ip_cube, axis=0)]
+            components = ['Ic', 'Is', 'Ip']
+            for i, cube in enumerate(cubes):
+                hdul = fits.HDUList([fits.PrimaryHDU()])
+                hdul.append(fits.ImageHDU(name='cps', data=cube))
+                hdul.writeto(fits_dir + components[i] + '_drizzle.fits', overwrite=overwrite)
+                print(('FITS file {} saved'.format(fits_dir + components[i] + '_drizzle')))
+        elif self.binned and not self.timestep:
+            i_c = np.sum(self.ic_cube, axis=0)
+            i_s = np.sum(self.is_cube, axis=0)
+            cubes = [i_c, i_s, i_c / i_s]
+            components = ['Ic', 'Is', 'Ic_div_Is']
+            for i, cube in enumerate(cubes):
+                hdul = fits.HDUList([fits.PrimaryHDU()])
+                hdul.append(fits.ImageHDU(name='cps', data=cube))
+                hdul.writeto(fits_dir + components[i] + '_drizzle.fits', overwrite=overwrite)
+                print(('FITS file {} saved'.format(fits_dir + components[i] + '_drizzle.fits')))
+        elif self.timestep and self.binned:
+            cubes = [self.ic_cube, self.is_cube, self.ic_cube / self.is_cube]
+            components = ['Ic', 'Is', 'Ic_div_Is']
+            for i, cube in enumerate(cubes):
+                hdul = fits.HDUList([fits.PrimaryHDU()])
+                for j, data in enumerate(cube):
+                    hdul.append(fits.ImageHDU(name='cps', data=data))
+                hdul.writeto(fits_dir + components[i] + '_drizzle.fits', overwrite=overwrite)
+                print(('FITS file {} saved'.format(fits_dir + components[i] + '_drizzle')))
         else:
-            pltscl = (pltscl * u.arcsec).to(u.deg).value
+            print('Not a Valid Mode')
+
+    def drizzle_components(self, pixfrac=0.5, component=''):
+        """
+        Drizzles specified Ic, Is and (if binned=False) Ip components to later be saved to fits files
+        :param pixfrac:
+        :param component:
+        :return:
+        """
+        pt = Photontable(self.h5_files[0])
+        if pt.query_header('E_PLTSCL') < 1e-4:
+            target, pltscl = pt.query_header('OBJECT'), pt.query_header('E_PLTSCL')
+        else:
+            target, pltscl = pt.query_header('OBJECT'), (pt.query_header('E_PLTSCL') * u.arcsec).to(u.deg).value
+        try:
+            coords = SkyCoord(pt.query_header('D_IMRRA').values[0], pt.query_header('D_IMRDEC').values[0],
+                              unit=(u.hourangle, u.deg))
+        except (IndexError, KeyError) as e:
+            coords = SkyCoord.from_name(target)
         ref_wcs = get_canvas_wcs(target, coords=coords, platescale=pltscl)
-        driz = Drizzle(outwcs=ref_wcs, pixfrac=0.5, wt_scl='')
-        for i, infile in enumerate(fits_files):
-            try:
-                imlist = fits.open(infile)
-                try:
-                    image = imlist[plot_type].data
-                except IndexError:
-                    getLogger(__name__).info(f'Fits files in {self.fits_dir} have no Ic, Is, and Ip data attached')
-                    return
-                flags = imlist['FLAGS'].data
-                file_flags = self.photontables[i].flags
-                bad_bit_mask = file_flags.bitmask(PROBLEM_FLAGS)
-                weight_arr = np.ones((140,146))
-                for (x, y), flag in np.ndenumerate(flags):
-                    if flag & bad_bit_mask != 0:
-                        weight_arr[x, y] = 0
-                    else:
-                        weight_arr[x, y] = 1
-                cps = image
-                if plot_type == 'Is':
-                    tcps = cps.T
-                    is_lim = np.nanmedian(tcps[tcps != 0])
-                    tcps[tcps > (100 * is_lim)] = 0
-                    bad_idx = np.where(tcps <= 0)
-                    weight_arr[bad_idx] = 0
-                if plot_type == 'Ic':
-                    tcps = cps.T
-                    ic_lim = np.nanmedian(tcps[tcps != 0])
-                    tcps[tcps > (100 * ic_lim)] = 0
-                    bad_idx = np.where(tcps <= 0)
-                    weight_arr[bad_idx] = 0
-                cps[np.isnan(cps)] = 0
-                image_wcs = WCS(imlist[0].header)
-                image_wcs.pixel_shape = (146, 140)
-                # TODO actually get cps in counts/s - divide by effective inttime
-                driz.add_image(cps.T, inwcs=image_wcs, in_units='cps', inwht=weight_arr)
-            except ValueError:
-                pass
-        driz.write(self.fits_dir + plot_type + '_drizzle.fits')
-        return None
-
-
-def initialize_fits(fn_list, out_file_path, ncpu=1):
-    """
-    wrapper function for running multiprocessing with init_fits
-    :param fn_list: list of h5 files
-    :param out_file_path: location to save the output fits files to
-    :param ncpu: number of cores to ue for multiprocessing
-    :return: None
-    """
-    use_fn_list = []
-    for i, fn in enumerate(fn_list):
-        if os.path.exists(out_file_path + fn[-13:-3] + '.fits'):
-            getLogger(__name__).info(
-                f'fits file {fn[0:-3]}.fits already exists in the specified directory, not creating a new one')
-        if not os.path.exists(out_file_path + fn[-13:-3] + '.fits'):
-            use_fn_list.append(fn)
-    p = Pool(ncpu)
-    f = partial(init_fits, out_file_path=out_file_path)
-    p.map(f, use_fn_list)
-
-
-def init_fits(fn, out_file_path):
-    """
-    creates a fits file from h5 file, fn by calling Photontable.get_fits().
-    :param fn: h5 file to make a fits file from
-    :param out_file_path: directory to save the fits file to
-    :return: None
-    """
-    pt = Photontable(fn)
-    with pt.needed_ram():
-        hdu = pt.get_fits(rate=True, wave_start=700, wave_stop=1500, weight=True, exclude_flags=PROBLEM_FLAGS,
-                          derotate=True)
-        hdu.writeto(out_file_path + fn[-13:-3] + '.fits')
-        hdu.close()
-        getLogger(__name__).info(f'Initialized fits file for {out_file_path + fn[-13:-3]}.fits')
-
+        n_times = (len(self.data) * len(self.data[0]['wcs_seq']))
+        dithhyper = np.zeros((n_times, 500, 500), dtype=np.float32)
+        for pos, dither_pos in enumerate(self.data):
+            for wcs_i, wcs_sol in enumerate(dither_pos['wcs_seq']):
+                cps = dither_pos[component][wcs_i]
+                driz = Drizzle(outwcs=ref_wcs, pixfrac=pixfrac)
+                if self.binned:
+                    cps[cps < 0] = 0
+                    cps[cps > 100] = 0
+                inwht = cps.astype(bool).astype(int)
+                wcs_sol.pixel_shape = (146, 140)
+                driz.add_image(cps, wcs_sol, inwht=inwht, in_units='cps')
+                # for a single wcs timestep
+                dithhyper[pos * len(dither_pos['wcs_seq']) + wcs_i, :,
+                :] = driz.outsci  # sum all counts in same exposure bi
+        if component == 'ic_image':
+            self.ic_cube = dithhyper
+        elif component == 'is_image':
+            self.is_cube = dithhyper
+        elif component == 'ip_image':
+            self.ip_cube = dithhyper
+    
 
 def calculate_components(fn_list, component_dir, ncpu=1, prior=None, prior_sig=None, set_ip_zero=False, binned=False,
-                         bin_size=None, read_noise=0.0, deadtime=None, startt=None, duration=None, lucky=False):
+                         bin_size=None, read_noise=0.0, deadtime=None, startt=None, duration=None, lucky=False,
+                         timestep=None, adi_mode=False):
     """
     wrapper for running the binned or binfree SSD code
     :param fn_list: list of h5 files
@@ -248,16 +238,22 @@ def calculate_components(fn_list, component_dir, ncpu=1, prior=None, prior_sig=N
     if binned:
         p = Pool(ncpu)
         f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise,
-                    use_lucky=lucky)
-        p.map(f, fn_list)
+                    use_lucky=lucky, timestep=timestep, startt=startt, duration=duration, adi_mode=adi_mode)
+        data = p.map(f, fn_list)
+        data.sort(key=lambda k: fn_list.index(k['file']))
+        return data
     else:
         p = Pool(ncpu)
         f = partial(binfree_ssd, save=True, save_dir=component_dir, IptoZero=set_ip_zero, prior=prior,
-                    prior_sig=prior_sig, deadtime=deadtime, startt=startt, duration=duration, use_lucky=lucky)
-        p.map(f, fn_list)
+                    prior_sig=prior_sig, deadtime=deadtime, startt=startt, duration=duration, use_lucky=lucky,
+                    timestep=timestep, adi_mode=adi_mode)
+        data = p.map(f, fn_list)
+        data.sort(key=lambda k: fn_list.index(k['file']))
+        return data
 
 
-def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_noise=0.0, use_lucky=True):
+def binned_ssd(fn, save=True, save_dir='', bin_size=0.01, read_noise=0.0, use_lucky=False, timestep=None,
+               adi_mode=False, startt=None, duration=None):
     """
     function for running binned SSD
 
@@ -270,61 +266,73 @@ def binned_ssd(fn, save=True, save_dir='', name_ext='', bin_size=0.01, read_nois
     :return: Ic and Is images
     """
     pt = Photontable(fn)
-    Ic_image = np.zeros((140, 146))
-    Is_image = np.zeros((140, 146))
-    if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
-        getLogger(__name__).info('Ic and Is already calculated for {}'.format(fn))
-        return
-    num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
-    bar = ProgressBar(maxval=num_pix).start()
-    bari = 0
-    if use_lucky:
-        use_cubes = lucky_images(pt, bin_size)
-    with pt.needed_ram():
-        for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
-            ts = pt.query(pixel=pix, column='time')
-            if len(ts) > 0:
-                if use_lucky:
-                    lc_counts = np.array([int(c[pix[0], pix[1]]) for c in use_cubes])
-                else:
-                    lc_counts, lc_intensity, lc_times = getLightCurve(ts / 10 ** 6, effExpTime=bin_size)
-                mu = np.mean(lc_counts)
-                var = np.var(lc_counts)
-                if read_noise and read_noise !=0:
-                    # for poisson noise
-                    # noise = np.random.poisson(read_noise, len(lc_counts))
-                    # lc_counts = np.array([lc_counts[i] + noise[i] for i in range(len(lc_counts))])
-                    noise = np.random.normal(loc=read_noise, size=len(lc_counts))
-                    noise=np.around(noise).astype(int)
-                    lc_counts = np.array([lc_counts[i] + noise[i] for i in range(len(lc_counts))])
-                    np.clip(lc_counts, 0, 1e5, out=lc_counts)
-                try:
-                    IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, bin_size)) * bin_size
-                except ValueError:
-                    IIc = mu / 2  # just create a reasonable seed
-                    IIs = mu - IIc
-                Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs, effExpTime=bin_size)
-                Ic_image[pix[0]][pix[1]] = Ic
-                Is_image[pix[0]][pix[1]] = Is
-            else:
-                Ic_image[pix[0]][pix[1]] = 0
-                Is_image[pix[0]][pix[1]] = 0
-            bari += 1
-            bar.update(bari)
-        bar.finish()
+    if timestep:
+        wcs_times = pt.start_time + np.arange(startt, startt + duration, timestep)  # This is in unixtime
+    else:
+        wcs_times = [pt.start_time + startt]
+    wcs = pt.get_wcs(derotate=not adi_mode, sample_times=wcs_times)
+    ntimes = len(wcs_times)
+    Ic_image = np.zeros((ntimes, 140, 146))
+    Is_image = np.zeros((ntimes, 140, 146))
+    if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + '.npy'):
+        print('Ic, Is, and Ip already calculated for {}'.format(fn))
+        Ic_image = np.load(save_dir + 'Ic/' + fn[-13:-3] + '.npy')
+        Is_image = np.load(save_dir + 'Is/' + fn[-13:-3] + '.npy')
+    else:
+        for j in range(ntimes):
+            print(f'Running time {j} of {fn}')
+            num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
+            bar = ProgressBar(maxval=num_pix).start()
+            bari = 0
+            if use_lucky:
+                use_cubes = lucky_images(pt, bin_size)
+            with pt.needed_ram():
+                for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
+                    ts = pt.query(start=wcs_times[j] if startt > 0 else None,
+                                  intt=timestep if timestep > 0 else duration, resid=resID, column='time')
+                    if len(ts) > 0:
+                        if use_lucky:
+                            lc_counts = np.array([int(c[pix[0], pix[1]]) for c in use_cubes])
+                        else:
+                            lc_counts, lc_intensity, lc_times, _ = getLightCurve(ts / 10 ** 6, effExpTime=bin_size)
+                        mu = np.mean(lc_counts)
+                        var = np.var(lc_counts)
+                        if read_noise and read_noise != 0:
+                            # for poisson noise
+                            # noise = np.random.poisson(read_noise, len(lc_counts))
+                            # lc_counts = np.array([lc_counts[i] + noise[i] for i in range(len(lc_counts))])
+                            noise = np.random.normal(loc=read_noise, size=len(lc_counts))
+                            noise = np.around(noise).astype(int)
+                            lc_counts = np.array([lc_counts[i] + noise[i] for i in range(len(lc_counts))])
+                            np.clip(lc_counts, 0, 1e5, out=lc_counts)
+                        try:
+                            IIc, IIs = np.asarray(muVar_to_IcIs(mu, var, bin_size)) * bin_size
+                        except ValueError:
+                            IIc = mu / 2  # just create a reasonable seed
+                            IIs = mu - IIc
+                        Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs, effExpTime=bin_size)
+                        Ic_image[j][pix[0]][pix[1]] = Ic
+                        Is_image[j][pix[0]][pix[1]] = Is
+                    else:
+                        Ic_image[j][pix[0]][pix[1]] = 0
+                        Is_image[j][pix[0]][pix[1]] = 0
+                    bari += 1
+                    bar.update(bari)
+            bar.finish()
     if save:
         try:
-            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
-            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
+            np.save(save_dir + 'Ic/' + fn[-13:-3], Ic_image)
+            np.save(save_dir + 'Is/' + fn[-13:-3], Is_image)
         except FileNotFoundError:
             os.mkdir(save_dir + 'Ic/')
             os.mkdir(save_dir + 'Is/')
-            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
-            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
-    return Ic_image, Is_image
+            np.save(save_dir + 'Ic/' + fn[-13:-3], Ic_image)
+            np.save(save_dir + 'Is/' + fn[-13:-3], Is_image)
+    return {'file': fn, 'ic_image': Ic_image, 'is_image': Is_image, 'wcs_seq': wcs}
 
-def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, name_ext='', deadtime=None,
-                use_lucky=True, startt=None, duration=None):
+
+def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_sig=None, deadtime=None,
+                use_lucky=True, startt=None, duration=None, timestep=None, adi_mode=False):
     """
     Runs the binfree SSD
     :param fn: file to run binned SSD on
@@ -342,88 +350,73 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
         use_prior = None
         use_prior_sig = None
     pt = Photontable(fn)
-    Ic_image = np.zeros((140, 146))
-    Is_image = np.zeros((140, 146))
-    Ip_image = np.zeros((140, 146))
-    if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + name_ext + '.npy'):
-        getLogger(__name__).info('Ic, Is, and Ip already calculated for {}'.format(fn))
-        return
-    if use_lucky:
-        use_ranges = get_lucky(pt, 15, 30, startt=startt, duration=duration, bin_width=0.1, percent_best=0.3)
-    num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
-    bar = ProgressBar(maxval=num_pix).start()
-    bari = 0
-    for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
-        if use_lucky:
-            all_ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
-            dt = np.array([])
-            for i, range in enumerate(use_ranges):
-                idxs = np.where(np.logical_and(all_ts > range[0] * 1e6, all_ts < range[1] * 1e6))[0]
-                ts = all_ts[idxs]
-                dt_new = np.diff(np.sort(ts)) / 1e6
-                dt = np.append(dt, dt_new)
-        else:
-            ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
-            ts = np.sort(ts)
-            dt = np.diff(ts) / 1e6
-        if deadtime and len(dt) > 0:
-            dt = np.array([t if t > deadtime else t + dt[i + 1] for (i, t) in enumerate(dt[:-1])])
-        if prior:
-            use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan, np.nan]
-            use_prior_sig = [[prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0],
-                             np.nan, np.nan]
-        if len(dt) > 0:
-            model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig, forceIp2zero=IptoZero,
-                                     deadtime=deadtime if deadtime else 1.e-5)
-            Ic, Is, Ip = model.x
-            Ic_image[pix[0]][pix[1]] = Ic
-            Is_image[pix[0]][pix[1]] = Is
-            Ip_image[pix[0]][pix[1]] = Ip
-        bari += 1
-        bar.update(bari)
-    bar.finish()
+    if timestep:
+        wcs_times = pt.start_time + np.arange(startt, startt + duration, timestep)  # This is in unixtime
+    else:
+        wcs_times = [pt.start_time + startt]
+    wcs = pt.get_wcs(derotate=not adi_mode, sample_times=wcs_times)
+    ntimes = len(wcs_times)
+    Ic_image = np.zeros((ntimes, 140, 146))
+    Is_image = np.zeros((ntimes, 140, 146))
+    Ip_image = np.zeros((ntimes, 140, 146))
+    if os.path.exists(save_dir + 'Ic/' + fn[-13:-3] + '.npy'):
+        print('Ic, Is, and Ip already calculated for {}'.format(fn))
+        Ic_image = np.load(save_dir + 'Ic/' + fn[-13:-3] + '.npy')
+        Is_image = np.load(save_dir + 'Is/' + fn[-13:-3] + '.npy')
+        Ip_image = np.load(save_dir + 'Ip/' + fn[-13:-3] + '.npy')
+    else:
+        for j in range(ntimes):
+            print(f'Running time {j} of {fn}')
+            if use_lucky:
+                use_ranges = get_lucky(pt, 15, 30, startt=startt, duration=duration, bin_width=0.1, percent_best=0.3)
+            num_pix = len([i for i in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True)])
+            bar = ProgressBar(maxval=num_pix).start()
+            bari = 0
+            for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
+                if use_lucky:
+                    all_ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
+                    dt = np.array([])
+                    for i, range in enumerate(use_ranges):
+                        idxs = np.where(np.logical_and(all_ts > range[0] * 1e6, all_ts < range[1] * 1e6))[0]
+                        ts = all_ts[idxs]
+                        dt_new = np.diff(np.sort(ts)) / 1e6
+                        dt = np.append(dt, dt_new)
+                else:
+                    ts = pt.query(start=wcs_times[j], intt=timestep if timestep else duration, resid=resID,
+                                  column='time')
+                    ts = np.sort(ts)
+                    dt = np.diff(ts) / 1e6
+                if deadtime and len(dt) > 0:
+                    dt = np.array([t if t > deadtime else t + dt[i + 1] for (i, t) in enumerate(dt[:-1])])
+                if prior:
+                    use_prior = [[prior[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior[0][0])) else np.nan][0], np.nan,
+                                 np.nan]
+                    use_prior_sig = [
+                        [prior_sig[0][0][pix[0], pix[1]] if np.any(~np.isnan(prior_sig[0][0])) else np.nan][0],
+                        np.nan, np.nan]
+                if len(dt) > 0:
+                    model = optimize_IcIsIr2(dt, prior=use_prior, prior_sig=use_prior_sig, forceIp2zero=IptoZero,
+                                             deadtime=deadtime if deadtime else 1.e-5)
+                    Ic, Is, Ip = model.x
+                    Ic_image[j][pix[0]][pix[1]] = Ic
+                    Is_image[j][pix[0]][pix[1]] = Is
+                    Ip_image[j][pix[0]][pix[1]] = Ip
+                bari += 1
+                bar.update(bari)
+            bar.finish()
     if save:
         try:
-            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
-            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
+            np.save(save_dir + 'Ic/' + fn[-13:-3], Ic_image)
+            np.save(save_dir + 'Is/' + fn[-13:-3], Is_image)
         except FileNotFoundError:
             os.mkdir(save_dir + 'Ic/')
             os.mkdir(save_dir + 'Is/')
             os.mkdir(save_dir + 'Ip/')
-            np.save(save_dir + 'Ic/' + fn[-13:-3] + name_ext, Ic_image.T)
-            np.save(save_dir + 'Is/' + fn[-13:-3] + name_ext, Is_image.T)
+            np.save(save_dir + 'Ic/' + fn[-13:-3], Ic_image)
+            np.save(save_dir + 'Is/' + fn[-13:-3], Is_image)
         if not IptoZero:
-            np.save(save_dir + 'Ip/' + fn[-13:-3] + name_ext, Ip_image.T)
-    return Ic_image, Is_image, Ip_image
-
-
-def update_fits(data_file_path, fits_file_path, ext='UNKNOWN'):
-    """
-    takes a series of 3D .npy arrays in data_file_path and appends them to the end of the appropriate fits file
-    in fits_file_path
-    :param data_file_path: location of the .npy arrays
-    :param fits_file_path: location of the fits files
-    :param ext: EXTNAME of HDU to be added to the header of the HDU where the data is being added
-    :return:
-    """
-    getLogger(__name__).info('Adding SSD data to fits files')
-    for j, fit in enumerate(os.listdir(fits_file_path)):
-        hdul = fits.open(fits_file_path + fit)
-        try:
-            im = hdul[ext]
-            pass
-        except KeyError:
-            for i, fn in enumerate(os.listdir(data_file_path)):
-                if fit[0:-5] == fn[0:-4]:
-                    try:
-                        data = np.load(data_file_path + fn)
-                        hdr = fits.Header()
-                        hdu = fits.ImageHDU(data=data, header=hdr, name=ext)
-                        hdul.append(hdu)
-                        hdul.writeto(fits_file_path+fit, overwrite=True)
-                    except OSError:
-                        getLogger(__name__).info('Error trying to append ImageHdu {}'.format(fn[0:-4]))
-                        pass
+            np.save(save_dir + 'Ip/' + fn[-13:-3], Ip_image)
+    return {'file': fn, 'ic_image': Ic_image, 'is_image': Is_image, 'ip_image': Ip_image, 'wcs_seq': wcs}
 
 
 def quickstack(file_path, make_fits=False, axes=None, v_max=30000):
@@ -468,50 +461,24 @@ def get_canvas_wcs(target, coords=None, platescale=None):
     return wcs
 
 
-def plot_icisip(fn, Ic, Is, Ip):
-    """
-    Easy plotting function to compare Ic, Ip and Is
-    :param fn: File path to save the finished plot to
-    :param Ic: 2D array of Ic
-    :param Is: 2D array of Ic
-    :param Ip: 2D array of Ic
-    :return:
-    """
-    fig, axes = plt.subplots(2, 2)
-    im1 = axes[0][0].imshow(Ic, vmin=0, vmax=30)
-    axes[0][0].set_title('Ic')
-    im2 = axes[0][1].imshow(Is, vmin=0, vmax=30)
-    axes[0][1].set_title('Is')
-    im3 = axes[1][0].imshow(Ip, vmin=0, vmax=30)
-    axes[1][0].set_title('Ip')
-    plt.colorbar(im1, ax=axes[0][0])
-    plt.colorbar(im2, ax=axes[0][1])
-    plt.colorbar(im3, ax=axes[1][0])
-    plt.tight_layout()
-    plt.savefig(fn)
-
-
-def plot_ic_div_is(Ic, Is, axes=None):
-    """
-    plotting function to display ic/is
-    :param Ic: 3D array of Ic values
-    :param Is: 3D array of Is values
-    :param axes: axes on which to plot the result
-    :return: matplotlib Axes object
-    """
-    div_image = np.zeros_like(Ic)
-    for coords, idx in np.ndenumerate(Ic):
-        x = coords[0]
-        y = coords[1]
-        if 0 < Ic[x][y] < 100 and 0.3 < Is[x][y]:
-            div_image[x][y] = Ic[x][y]/Is[x][y]
+def get_annulus_pixels(pt, annulus_idx):
+    xCon, yCon = pt.query_header('E_CONEXX'), pt.query_header('E_CONEXY')
+    slopes = (pt.query_header('E_DPDCX'), pt.query_header('E_DPDCY'))
+    ref_pix = (pt.query_header('E_PREFX'), pt.query_header('E_PREFY'))
+    ref_con = (pt.query_header('E_CXREFX'), pt.query_header('E_CXREFY'))
+    center_pix = CONEX2PIXEL(xCon, yCon, slopes, ref_pix, ref_con)
+    n_apers, _ = get_num_apertures(0.5, annulus_idx + 1)
+    angular_size = 2 * np.arctan(0.5 / (annulus_idx + 1))
+    centers = []
+    shape = np.shape(pt.beamImage)
+    for i in range(n_apers):
+        aperture_center = get_aperture_center(0, i * angular_size, center_pix, annulus_idx + 1)
+        if int(np.round(aperture_center[0])) < 0 or int(np.round(aperture_center[0])) >= shape[0] or int(
+                np.round(aperture_center[1])) < 0 or int(np.round(aperture_center[1])) >= shape[1]:
+            pass
         else:
-            div_image[x][y] = 0
-    my_cmap = matplotlib.cm.get_cmap('viridis')
-    im = axes.imshow(div_image, vmin=0, vmax=100, cmap=my_cmap)# norm=LogNorm(vmin=0.1, vmax=100), cmap=my_cmap)
-    plt.colorbar(im, ax=axes)
-    axes.set_title('Ic/Is')
-    return axes
+            centers.append((int(np.round(aperture_center[0])), int(np.round(aperture_center[1]))))
+    return centers
 
 
 def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], axes=None, fit_poisson=True):
@@ -548,67 +515,6 @@ def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], a
     axes.legend(prop={'size': 6}, loc='upper right')
     # axes.set_ylim(0, 0.2)
     return axes
-
-
-def mr_hist_summary_plot(cube, object_location, field_location, box_size=2, N=40, Ic=None, Is=None, object_name='',
-                         save_dir='', span=[0, 300]):
-    """
-    Plots an image of the data given by cube and also histograms of the counts contained in a box centered on
-    object_location and field_location
-
-    :param cube:
-    :param object_location: location of the object of interest
-    :param field_location: location of a speckle in the field to compare
-    :param box_size: size of the aperture around the object center for which you would like to consider data (in pixels)
-    :param Ic: 3D numpy array - If given will add a plot of Ic/Is to the plot
-    :param Is: 3D numpy array - If given will add a plot of Ic/Is to the plot
-    :param object_name: name of the object for the plot title (str)
-    :param save_dir: directory in which to save the plot
-    :param span:
-    :return: None
-    """
-    x = object_location[0]
-    y = object_location[1]
-    a = field_location[0]
-    b = field_location[1]
-    xmin = int(x-box_size/2)
-    xmax = int(x+box_size/2)
-    ymin = int(y-box_size/2)
-    ymax = int(y+box_size/2)
-    amin = int(a-box_size/2)
-    amax = int(a+box_size/2)
-    bmin = int(b-box_size/2)
-    bmax = int(b+box_size/2)
-
-    figure = plt.figure()
-    gs = gridspec.GridSpec(2, 2)
-    axes_list = np.array([figure.add_subplot(gs[0, 0]), figure.add_subplot(gs[0, 1]),
-                          figure.add_subplot(gs[1, 0]), figure.add_subplot(gs[1, 1])])
-
-    cmap = plt.cm.viridis
-    cmap.set_bad(color='r')
-    try:
-        im = axes_list[3].imshow(np.sum(cube['cube'], axis=2), cmap=cmap, vmin=0, vmax=3000, interpolation='nearest')
-        object_intensities = np.sum(cube['cube'][xmin:xmax, ymin:ymax, :], axis=(0, 1))
-        field_intensities = np.sum(cube['cube'][amin:amax, bmin:bmax, :], axis=(0, 1))
-    except IndexError:
-        im = axes_list[3].imshow(np.sum(cube, axis=2), cmap=cmap, vmin=0, vmax=8000, interpolation='nearest')
-        object_intensities = np.sum(cube[xmin:xmax, ymin:ymax, :], axis=(0, 1))
-        field_intensities = np.sum(cube[amin:amax, bmin:bmax, :], axis=(0, 1))
-
-    plt.colorbar(im, ax=axes_list[3])
-    axes_list[3].set_title('Total Intensity')
-
-    plot_intensity_histogram(object_intensities, object_name=object_name, axes=axes_list[0], N=N, span=span)
-    plot_intensity_histogram(field_intensities, object_name='Field', axes=axes_list[1], N=N, span=span)
-    if Ic and Is:
-        plot_ic_div_is(Ic, Is, axes=axes_list[2])
-    circ_obj = Circle((object_location[1], object_location[0]), box_size, fill=False, color='red')
-    circ_field = Circle((field_location[1], field_location[0]), box_size, fill=False, color='orange')
-    axes_list[3].add_patch(circ_obj)
-    axes_list[3].add_patch(circ_field)
-    plt.tight_layout()
-    plt.savefig(save_dir + 'mr_summary.pdf')
 
 
 def lucky_images(pt, bin_size):
