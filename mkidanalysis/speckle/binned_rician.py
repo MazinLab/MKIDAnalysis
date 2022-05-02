@@ -49,12 +49,12 @@ def getLightCurve(photonTimeStamps, startTime=None, stopTime=None, effExpTime=.0
         stopTime = photonTimeStamps[-1]
     histBinEdges = np.arange(startTime, stopTime, effExpTime)
 
-    hist, _ = np.histogram(photonTimeStamps, bins=histBinEdges)  # if histBinEdges has N elements, hist has N-1
+    hist, bins = np.histogram(photonTimeStamps, bins=histBinEdges)  # if histBinEdges has N elements, hist has N-1
     lightCurveIntensityCounts = hist  # units are photon counts
     lightCurveIntensity = 1. * hist / effExpTime  # units are counts/sec
     lightCurveTimes = histBinEdges[:-1] + 1.0 * effExpTime / 2
 
-    return lightCurveIntensityCounts, lightCurveIntensity, lightCurveTimes
+    return lightCurveIntensityCounts, lightCurveIntensity, lightCurveTimes, bins
     # [lightCurveIntensityCounts] = counts
     # [lightCurveIntensity] = counts/sec
 
