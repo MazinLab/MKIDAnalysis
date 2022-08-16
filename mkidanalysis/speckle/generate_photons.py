@@ -1,24 +1,28 @@
 #!/usr/bin/env python
-
-from __future__ import print_function
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy import special, interpolate
-import mkidpipeline.speckle.photonstats_utils as utils
+import mkidanalysis.speckle.photonstats_utils as utils
 from astropy.convolution import Gaussian2DKernel, convolve
 from mkidpipeline.photontable import Photontable
 import tables
 from scipy.stats import gamma
+import scipy
 
+
+def p_I(I, k=None, theta=None, mu=None, I_peak=None):
+    p = (((-np.log(I / I_peak) - mu) / theta) ** (k - 1) * np.exp((np.log(I / I_peak) + mu) / theta)) / (
+                special.gamma(k) * theta * I)
+    return p
 
 def p_A(x, gam=None, bet=None, alph=None):
     pdf = gamma.pdf(x, alph, loc=gam, scale=1 / bet)
     return pdf
 
 
-def gamma_icdf(sr, Ip, gam=None, bet=None, alph=None, interpmethod='cubic'):
+def gamma_icdf(median_strehl, Ip, bet=None, alph=None, interpmethod='cubic'):
     """
-
-    :param sr: MEAN value of the strehl ratio
+    :param sr: MEDIAN value of the strehl ratio
     :param Ip:
     :param gam:
     :param bet:
@@ -27,31 +31,26 @@ def gamma_icdf(sr, Ip, gam=None, bet=None, alph=None, interpmethod='cubic'):
     :return:
     """
     # compute mean and variance of gamma distribution
-    mu = sr
-    sig = 0.01  # TODO figure out
-
-    I1 = max(0, mu - 15 * sig)
-    I2 = mu + 15 * sig if mu + 15 * sig < 1. else 1.
-    I = np.linspace(I1, I2, 1000)
-    p_I = (1. / (2 * np.sqrt(I))) * (p_A(np.sqrt(I), gam=gam, alph=alph, bet=bet) +
-                                     p_A(-np.sqrt(I), gam=-(1 - gam), alph=alph, bet=bet))
-    I *= Ip
-
+    sr1 = 0.1  # max(0, mu - 15 * sig)
+    sr2 = 1.0  # min(mu + 15 * sig, 1.)
+    sr = np.linspace(sr1, sr2, 1000)
+    gam = -(median_strehl + (1 - median_strehl))
+    p_I = (1. / (2 * np.sqrt(sr))) * (p_A(np.sqrt(sr), gam=gam, alph=alph, bet=bet) +
+                                      p_A(-np.sqrt(sr), gam=gam, alph=alph, bet=bet))
+    norm = scipy.integrate.simps(p_I)
+    p_I /= norm
+    # go from strehls to intensities
+    I = (sr * Ip) / median_strehl
     dI = I[1] - I[0]
     I += dI / 2
-
     cdf = np.cumsum(p_I) * dI
     cdf /= cdf[-1]
-
     # The integral is defined with respect to the bin edges.
-
     I = np.asarray([0] + list(I + dI / 2))
     cdf = np.asarray([0] + list(cdf))
-
     # The interpolation scheme doesn't want duplicate values.  Pick
     # the unique ones, and then return a function to compute the
     # inverse of the CDF.
-
     i = np.unique(cdf, return_index=True)[1]
     return interpolate.interp1d(cdf[i], I[i], kind=interpmethod)
 
@@ -144,47 +143,43 @@ def corrsequence(Ttot, tau):
     return t, r
 
 
-def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
-                  taufac=500, return_IDs=False, mean_strehl=0.8):
+def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic', taufac=500, return_IDs=False,
+                  mean_strehl=None, gamma_distributed=True, beta=30, alpha=5, background_count_rate=0,
+                  remove_background=True):
     """
-    Generate a photon list from an input Ic, Is with an arbitrary
-    photon rate.  All times are measured in seconds or inverse
-    seconds; the returned list of times is in microseconds.
-
-    Arguments:
-    Ic: float, units 1/seconds
-    Is: float, units 1/seconds
-    Ir: float, units 1/seconds
-    Ttot: int, total exposure time in seconds
-    tau: float, correlation time in seconds
-
-    Optional arguments:
-    deadtime: float, units microseconds
-    interpmethod: argument 'kind' to interpolate.interp1d
-    taufac: float, discretize intensity with bin width tau/taufac.  Doing so speeds up the code immensely.  Default 500 (intensity errors ~1e-3)
-    return_IDs: return an array giving the distribution (MR or constant) that produced each photon?  Default False.
-
-    Returns:
-        t, 1D array of photon arrival times
-
-    Optional additional return:
-        t2, 1D array of photon arrival times if planet wasnt there (no deadtime from planet photons)
-        p, 1D array, 0 if photon came from Ic/Is MR, 1 if photon came from Ir
-
+    Generate a mock photonlist from input Ic, Is, and Ir with deadtime accurately handled. Ic and Is define the modified
+    Rician fron which the speckle photons are sampled and Ir can either be taken to be constant or sampled from a Gamma
+    distribution. Background photons can also optionally be placed into the photon list and either removed before
+    returning (simulating a wavelength cut) or left in.
+    :param Ic: Constant component of the modified Rician (MR), in units of 1/second
+    :param Is: time variable component of the modified Rician (MR), in units of 1/second
+    :param Ir: Companion intensity, in units of 1/second
+    :param Ttot: total exposure time, in seconds
+    :param tau: correlation time, in seconds
+    :param deadtime: Detector dead time, in microseconds
+    :param interpmethod: argument 'kind' to interpolate.interp1d
+    :param taufac: float, discretize intensity with bin width tau/taufac.  Doing so speeds up the code immensely
+    :param return_IDs: if True, returns an array giving the distribution (MR or constant) that produced each photon?
+    :param mean_strehl: Average Strehl Ratio (SR) - used for calculating the Gamma CDF if gamma_distributed is True
+    :param gamma_distributed: if True will have the companion intensity follow a Gamma distributed PDF
+    :param beta: Gamma distribution parameter
+    :param alpha: Gamma distribution parameter
+    :param background_count_rate: background count rate to add to the photonlist, in unit of counts/second
+    :param remove_background: if True will insert then remove the specified background - simulates performing a
+    wavelength cut on MKID data
+    :return:
+    1D array of photon arrival times (in microseconds) and (if return_IDs)
+    1D array of photon arrival times if planet wasnt there (no deadtime from planet photons),
+    1D array, 0 if photon came from Ic/Is MR, 1 if photon came from Ir
     """
-
-    # Generate a correlated Gaussian sequence, correlation time tau.
-    # Then transform this to a random variable uniformly distributed
-    # between 0 and 1, and finally back to a modified Rician random
-    # variable.  This method ensures that: (1) the output is M-R
-    # distributed, and (2) it is exponentially correlated.  Finally,
-    # return a list of photons determined by the probability of each
-    # unit of time giving a detected photon.
+    # Generate a correlated Gaussian sequence, correlation time tau. Then transform this to a random variable
+    # uniformly distributed between 0 and 1, and finally back to a modified Rician random variable.
+    # This method ensures that: (1) the output is M-R distributed, and (2) it is exponentially correlated.  Finally,
+    # return a list of photons determined by the probability of each unit of time giving a detected photon.
 
     # Number of microseconds per bin in which we discretize intensity
-
     N = max(int(tau * 1e6 / taufac), 1)
-
+    #Add in MR distributed Speckle intensities
     if Is > 1e-8 * Ic:
         t, normal = corrsequence(int(Ttot * 1e6 / N), tau * 1e6 / N)
         uniform = 0.5 * (special.erf(normal / np.sqrt(2)) + 1)
@@ -197,63 +192,53 @@ def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic',
         I = Ic / 1e6 * np.ones(t.shape)
     else:
         raise ValueError("Cannot generate a photon list with Is<0.")
-
-    if Ir > 1e-6:
-        if mean_strehl is None:
-            mean_strehl = 0.8
-        uni = np.random.normal(0, 1, int(Ttot * 1e6 / N))
-        uniform = 0.5 * (special.erf(uni / np.sqrt(2)) + 1)
-        # threshold
-        gam = (1 - mean_strehl) / 2 if mean_strehl != 1 else 0
-        # mean rate of occurance
-        bet = N
-        alph = 1.5
-        f = gamma_icdf(mean_strehl, Ir, gam=gam, bet=bet, alph=alph, interpmethod=interpmethod)
+    # Add in companion intensities (Gamma distributed or constant)
+    if gamma_distributed and Ir > 1e-6:
+        t2, normal2 = corrsequence(int(Ttot * 1e6 / N), tau * 1e6 / N)
+        uniform = 0.5 * (special.erf(normal2 / np.sqrt(2)) + 1)
+        t2 *= N
+        f = gamma_icdf(mean_strehl, Ir, bet=beta, alph=alpha, interpmethod=interpmethod)
         I_comp = f(uniform) / 1e6
     else:
-        I_comp = np.ones(t.shape) * Ir / 1e6
-
+        t2 = np.arange(0, int(Ttot * 1e6), N)
+        I_comp = np.ones(t2.shape) * Ir / 1e6
+    t3 = np.arange(0, int(Ttot * 1e6), N)
     # Number of photons from each distribution in each time bin
-
-    n1 = np.random.poisson(I * N)
-    n2 = np.random.poisson(I_comp * N)
-    # n2 = np.random.poisson(np.ones(t.shape) * Ir / 1e6 * N)
-
+    n_mr = np.random.poisson(I * N)
+    n_comp = np.random.poisson(I_comp * N)
+    n_back = np.random.poisson(np.ones(t3.shape) * background_count_rate / 1e6 * N)
 
     # Go ahead and make the list with repeated times
+    tlist = t[(n_mr > 0)]
+    tlist_r = t2[(n_comp > 0)]
+    tlist_back = t3[(n_back > 0)]
+    for i in range(1, max(np.amax(n_mr), np.amax(n_comp), np.amax(n_back)) + 1):
+        tlist = np.concatenate((tlist, t[(n_mr > i)]))
+        tlist_r = np.concatenate((tlist_r, t2[(n_comp > i)]))
+        tlist_back = np.concatenate((tlist_back, t3[(n_back > i)]))
 
-    tlist = t[(n1 > 0)]
-    tlist_r = t[(n2 > 0)]
-
-    for i in range(1, max(np.amax(n1), np.amax(n2)) + 1):
-        tlist = np.concatenate((tlist, t[(n1 > i)]))
-        tlist_r = np.concatenate((tlist_r, t[(n2 > i)]))
-
-    tlist_tot = np.concatenate((tlist, tlist_r)) * 1.
-
+    tlist_tot = np.concatenate((tlist, tlist_r, tlist_back)) * 1.
     # Add a random number to give the exact arrival time within the bin
-
     tlist_tot += N * np.random.rand(len(tlist_tot))
-
-    # Cython is much, much faster given that this has to be an
-    # explicit for loop; without Cython (even with numba) this step
-    # would dominate the run time.  Returns indices of the times we
-    # keep.
-
+    # Cython is much, much faster given that this has to be an explicit for loop; without Cython (even with numba)
+    # this step would dominate the run time.  Returns indices of the times we keep.
     indx = np.argsort(tlist_tot)
     keep = utils.removedeadtime(tlist_tot[indx], deadtime)
-
-    # plist tells us which distribution (MR or constant) actually
-    # produced a given photon; return this if desired.
+    # plist tells us which distribution (MR or constant) actually produced a given photon; return this if desired.
     if return_IDs:
         indx2 = indx[(indx < len(tlist))]
         keep2 = utils.removedeadtime(tlist_tot[indx2], deadtime)
         plist1 = np.zeros(tlist.shape).astype(int)
         plist2 = np.ones(tlist_r.shape).astype(int)
-        plist_tot = np.concatenate((plist1, plist2))
-        # ikeep = np.where(keep)
-        return tlist_tot[indx][np.where(keep)], tlist_tot[indx2][np.where(keep2)], plist_tot[indx][np.where(keep)]
-
+        plist3 = np.full_like(tlist_back, 2).astype(int)
+        plist_tot = np.concatenate((plist1, plist2, plist3))
+        if remove_background:
+            bkgd_exclude_keep = np.copy(keep)
+            bkgd_exclude_keep[np.where(plist_tot[indx] == 2)] = 0
+            return tlist_tot[indx][np.where(bkgd_exclude_keep)], tlist_tot[indx2][np.where(keep2)], \
+                   plist_tot[indx][np.where(bkgd_exclude_keep)]
+        else:
+            return tlist_tot[indx][np.where(keep)], tlist_tot[indx2][np.where(keep2)], plist_tot[indx][np.where(keep)]
     return tlist_tot[indx][np.where(keep)]
 
 
