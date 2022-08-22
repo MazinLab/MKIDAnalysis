@@ -8,16 +8,17 @@ from mkidanalysis.pdfs import mr_icdf, gamma_icdf
 from progressbar import ProgressBar
 
 class MockPhotonList:
-    def __init__(self, Ic, Is, Ip, intt=30, tau=0.1, taufac=500, deadtime=10.e-6, mean_strehl=None, background_rate=0,
-                 gamma_distributed=True, remove_background=False, beta=30, alpha=5, interpmethod='cubic'):
+    def __init__(self, ic_image, is_image, ip_image, intt=30, tau=0.1, taufac=500, deadtime=10.e-6, mean_strehl=None,
+                 background_rate=0, gamma_distributed=True, remove_background=False, beta=30, alpha=5,
+                 interpmethod='cubic'):
         """
         Generate a mock photonlist from input Ic, Is, and Ip with deadtime accurately handled. Ic and Is define the modified
         Rician fron which the speckle photons are sampled and Ip can either be taken to be constant or sampled from a Gamma
         distribution. Background photons can also optionally be placed into the photon list and either removed before
         returning (simulating a wavelength cut) or left in.
-        :param Ic: Constant component of the modified Rician (MR), in units of 1/second
-        :param Is: time variable component of the modified Rician (MR), in units of 1/second
-        :param Ip: Companion intensity, in units of 1/second
+        :param ic_image: Constant component of the modified Rician (MR), in units of 1/second
+        :param is_image: time variable component of the modified Rician (MR), in units of 1/second
+        :param ip_image: Companion intensity, in units of 1/second
         :param intt: total exposure time, in seconds
         :param tau: correlation time, in seconds
         :param deadtime: Detector dead time, in microseconds
@@ -31,9 +32,9 @@ class MockPhotonList:
         :param remove_background: if True will insert then remove the specified background - simulates performing a
         wavelength cut on MKID data
         """
-        self.Ic = Ic
-        self.Is = Is
-        self.Ip = Ip
+        self.Ic = ic_image
+        self.Is = is_image
+        self.Ip = ip_image
         self.mean_strehl = mean_strehl
         self.intt = intt
         self.tau = tau
@@ -45,6 +46,7 @@ class MockPhotonList:
         self.taufac = taufac
         self.interpmethod = interpmethod
         self.photon_list = None
+        self.N = None
         assert np.shape(self.Ic) == np.shape(self.Is) == np.shape(self.Ip)
         self.photon_flags = np.zeros_like(self.Ic, dtype=np.ndarray)
         self.dts = np.zeros_like(self.Ic, dtype=np.ndarray)
@@ -69,46 +71,38 @@ class MockPhotonList:
         # return a list of photons determined by the probability of each unit of time giving a detected photon.
 
         # Number of microseconds per bin in which we discretize intensity
-        N = max(int(self.tau * 1e6 / self.taufac), 1)
+        self.N = max(int(self.tau * 1e6 / self.taufac), 1)
         # Add in MR distributed Speckle intensities
         if Is > 1e-8 * Ic:
-            t, normal = corrsequence(int(self.intt * 1e6 / N), self.tau * 1e6 / N)
-            uniform = 0.5 * (special.erf(normal / np.sqrt(2)) + 1)
-            t *= N
-            f = mr_icdf(Ic, Is, interpmethod=self.interpmethod)
-            I = f(uniform) / 1e6
+            I, t = self.mr_intensities(Ic, Is)
         elif Is >= 0:
-            N = max(N, 1000)
             t = np.arange(int(self.intt * 1e6))
             I = Ic / 1e6 * np.ones(t.shape)
         else:
             raise ValueError("Cannot generate a photon list with Is<0.")
         # Add in companion intensities (Gamma distributed or constant)
         if self.gamma_distributed and Ip > 1e-6:
-            t2, normal2 = corrsequence(int(self.intt * 1e6 / N), self.tau * 1e6 / N)
-            uniform = 0.5 * (special.erf(normal2 / np.sqrt(2)) + 1)
-            t2 *= N
-            f = gamma_icdf(self.mean_strehl, Ip, bet=self.beta, alph=self.alpha, interpmethod=self.interpmethod)
-            I_comp = f(uniform) / 1e6
+            I_comp, t_comp = self.gamma_intensities(Ip)
         else:
-            t2 = np.arange(0, int(self.intt * 1e6), N)
-            I_comp = np.ones(t2.shape) * Ip / 1e6
-        t3 = np.arange(0, int(self.intt * 1e6), N)
+            t_comp = np.arange(0, int(self.intt * 1e6), self.N)
+            I_comp = np.ones(t_comp.shape) * Ip / 1e6
+        # generate discretize time bins for constant background
+        t_back = np.arange(0, int(self.intt * 1e6), self.N)
         # Number of photons from each distribution in each time bin
-        n_mr = np.random.poisson(I * N)
-        n_comp = np.random.poisson(I_comp * N)
-        n_back = np.random.poisson(np.ones(t3.shape) * self.background_rate / 1e6 * N)
+        n_mr = np.random.poisson(I * self.N)
+        n_comp = np.random.poisson(I_comp * self.N)
+        n_back = np.random.poisson(np.ones(t_back.shape) * self.background_rate / 1e6 * self.N)
         # Go ahead and make the list with repeated times
         tlist = t[(n_mr > 0)]
-        tlist_r = t2[(n_comp > 0)]
-        tlist_back = t3[(n_back > 0)]
+        tlist_r = t_comp[(n_comp > 0)]
+        tlist_back = t_back[(n_back > 0)]
         for i in range(1, max(np.amax(n_mr), np.amax(n_comp), np.amax(n_back)) + 1):
             tlist = np.concatenate((tlist, t[(n_mr > i)]))
-            tlist_r = np.concatenate((tlist_r, t2[(n_comp > i)]))
-            tlist_back = np.concatenate((tlist_back, t3[(n_back > i)]))
+            tlist_r = np.concatenate((tlist_r, t_comp[(n_comp > i)]))
+            tlist_back = np.concatenate((tlist_back, t_back[(n_back > i)]))
         tlist_tot = np.concatenate((tlist, tlist_r, tlist_back)) * 1.
         # Add a random number to give the exact arrival time within the bin
-        tlist_tot += N * np.random.rand(len(tlist_tot))
+        tlist_tot += self.N * np.random.rand(len(tlist_tot))
         # Cython is much, much faster given that this has to be an explicit for loop; without Cython (even with numba)
         # this step would dominate the run time.  Returns indices of the times we keep.
         indx = np.argsort(tlist_tot)
@@ -127,3 +121,17 @@ class MockPhotonList:
             self.photon_list[x, y] = tlist_tot[indx][np.where(keep)]
             self.photon_flags[x, y] = plist_tot[indx]
         self.dts[x, y] = (self.photon_list[x, y][1:] - self.photon_list[x, y][:-1]) * 1e-6
+
+    def mr_intensities(self, Ic, Is):
+        t, normal = corrsequence(int(self.intt * 1e6 / self.N), self.tau * 1e6 / self.N)
+        uniform = 0.5 * (special.erf(normal / np.sqrt(2)) + 1)
+        t *= self.N
+        f = mr_icdf(Ic, Is, interpmethod=self.interpmethod)
+        return f(uniform) / 1e6, t
+
+    def gamma_intensities(self, Ip):
+        t, normal = corrsequence(int(self.intt * 1e6 / self.N), self.tau * 1e6 / self.N)
+        uniform = 0.5 * (special.erf(normal / np.sqrt(2)) + 1)
+        t *= self.N
+        f = gamma_icdf(self.mean_strehl, Ip, bet=self.beta, alph=self.alpha, interpmethod=self.interpmethod)
+        return f(uniform) / 1e6, t
