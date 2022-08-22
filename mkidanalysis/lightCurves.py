@@ -100,7 +100,6 @@ def histogramLC(I, N=35, span=[0, 35], norm=True, centers=False):
     intHist, binEdges = np.histogram(I, bins=N, range=span)
     if norm == True:
         intHist = np.array(intHist) / float(len(I))
-
     if centers == True:
         bws = np.diff(binEdges)
         cents = binEdges[:-1] + bws[0] / 2.0
@@ -182,7 +181,7 @@ if __name__ == '__main__':
     if simPDF == 'MR':
         simLabel = "Simulated MR PDF: Ic=%i, Is=%i" % (Ic, Is)
         # MR distribution used to make simulated LC
-        simMR = pdfs.modifiedRician(I, Ic, Is)  # just for plotting purposes
+        simMR = pdfs.modified_rician(I, Ic, Is)  # just for plotting purposes
     elif simPDF == 'Poisson':
         simMR = pdfs.poisson(I, Ic + Is)
         simLabel = "Simulated Poisson PDF: Lambda=%2.2f" % (Ic + Is)
@@ -202,12 +201,12 @@ if __name__ == '__main__':
     guessIs = np.mean(lcDict['intensity']) * 0.3
 
     # fit a MR to the histogram of the lightcurve intensities
-    fitIc, fitIs = pdfs.fitMR(bins, hist, guessIc, guessIs)
-    fitMR = pdfs.modifiedRician(I, fitIc, fitIs)
+    fitIc, fitIs = pdfs.fit_mr(bins, hist, guessIc, guessIs)
+    fitMR = pdfs.modified_rician(I, fitIc, fitIs)
 
     # fit a poisson to the histogram to show it doesn't do as well
     guessLam = np.mean(lcDict['intensity'])
-    fitLam = pdfs.fitPoisson(bins, hist, guessLam)
+    fitLam = pdfs.fit_poisson(bins, hist, guessLam)
     fitPoisson = pdfs.poisson(I, fitLam)
 
     plt.plot(I, simMR, label=simLabel)
