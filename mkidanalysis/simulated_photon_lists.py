@@ -1,11 +1,11 @@
 import numpy as np
 from logging import getLogger
-from scipy import special, interpolate
+from scipy import special
 import mkidanalysis.speckle.photonstats_utils as utils
 import matplotlib.pyplot as plt
 from mkidanalysis.speckle.generate_photons import corrsequence
 from mkidanalysis.pdfs import mr_icdf, gamma_icdf
-
+from progressbar import ProgressBar
 
 class MockPhotonList:
     def __init__(self, Ic, Is, Ip, intt=30, tau=0.1, taufac=500, deadtime=10.e-6, mean_strehl=None, background_rate=0,
@@ -45,15 +45,23 @@ class MockPhotonList:
         self.taufac = taufac
         self.interpmethod = interpmethod
         self.photon_list = None
-        self.photon_flags = None
-        self.dts = None
+        assert np.shape(self.Ic) == np.shape(self.Is) == np.shape(self.Ip)
+        self.photon_flags = np.zeros_like(self.Ic, dtype=np.ndarray)
+        self.dts = np.zeros_like(self.Ic, dtype=np.ndarray)
+        self.photon_list = np.zeros_like(self.Ic, dtype=np.ndarray)
         if gamma_distributed and (alpha == 0 or beta == 0):
             raise ValueError('Requesting Gamma distributed arrival time distribution from on axis sources but at least'
                              'one Gamma parameter is 0')
         self.gamma_distributed = gamma_distributed
-        self.generate()
+        bar = ProgressBar(maxval=len(self.Ic.flatten())).start()
+        bari = 0
+        for (x, y), val in np.ndenumerate(self.Ic):
+            self.generate(self.Ic[x, y], self.Is[x, y], self.Ip[x, y], x, y)
+            bari += 1
+            bar.update(bari)
+        bar.finish()
 
-    def generate(self):
+    def generate(self, Ic, Is, Ip, x, y):
         getLogger(__name__).info('Generating photon list')
         # Generate a correlated Gaussian sequence, correlation time tau. Then transform this to a random variable
         # uniformly distributed between 0 and 1, and finally back to a modified Rician random variable.
@@ -63,28 +71,28 @@ class MockPhotonList:
         # Number of microseconds per bin in which we discretize intensity
         N = max(int(self.tau * 1e6 / self.taufac), 1)
         # Add in MR distributed Speckle intensities
-        if self.Is > 1e-8 * self.Ic:
+        if Is > 1e-8 * Ic:
             t, normal = corrsequence(int(self.intt * 1e6 / N), self.tau * 1e6 / N)
             uniform = 0.5 * (special.erf(normal / np.sqrt(2)) + 1)
             t *= N
-            f = mr_icdf(self.Ic, self.Is, interpmethod=self.interpmethod)
+            f = mr_icdf(Ic, Is, interpmethod=self.interpmethod)
             I = f(uniform) / 1e6
-        elif self.Is >= 0:
+        elif Is >= 0:
             N = max(N, 1000)
             t = np.arange(int(self.intt * 1e6))
-            I = self.Ic / 1e6 * np.ones(t.shape)
+            I = Ic / 1e6 * np.ones(t.shape)
         else:
             raise ValueError("Cannot generate a photon list with Is<0.")
         # Add in companion intensities (Gamma distributed or constant)
-        if self.gamma_distributed and self.Ip > 1e-6:
+        if self.gamma_distributed and Ip > 1e-6:
             t2, normal2 = corrsequence(int(self.intt * 1e6 / N), self.tau * 1e6 / N)
             uniform = 0.5 * (special.erf(normal2 / np.sqrt(2)) + 1)
             t2 *= N
-            f = gamma_icdf(self.mean_strehl, self.Ip, bet=self.beta, alph=self.alpha, interpmethod=self.interpmethod)
+            f = gamma_icdf(self.mean_strehl, Ip, bet=self.beta, alph=self.alpha, interpmethod=self.interpmethod)
             I_comp = f(uniform) / 1e6
         else:
             t2 = np.arange(0, int(self.intt * 1e6), N)
-            I_comp = np.ones(t2.shape) * self.Ip / 1e6
+            I_comp = np.ones(t2.shape) * Ip / 1e6
         t3 = np.arange(0, int(self.intt * 1e6), N)
         # Number of photons from each distribution in each time bin
         n_mr = np.random.poisson(I * N)
@@ -113,9 +121,9 @@ class MockPhotonList:
         if self.remove_background:
             bkgd_exclude_keep = np.copy(keep)
             bkgd_exclude_keep[np.where(plist_tot[indx] == 2)] = 0
-            self.photon_list = tlist_tot[indx][np.where(bkgd_exclude_keep)]
-            self.photon_flags = plist_tot[indx][np.where(bkgd_exclude_keep)]
+            self.photon_list[x, y] = tlist_tot[indx][np.where(bkgd_exclude_keep)]
+            self.photon_flags[x, y] = plist_tot[indx][np.where(bkgd_exclude_keep)]
         else:
-            self.photon_list = tlist_tot[indx][np.where(keep)]
-            self.photon_flags = plist_tot[indx]
-        self.dts = (self.photon_list[1:] - self.photon_list[:-1]) * 1e-6
+            self.photon_list[x, y] = tlist_tot[indx][np.where(keep)]
+            self.photon_flags[x, y] = plist_tot[indx]
+        self.dts[x, y] = (self.photon_list[x, y][1:] - self.photon_list[x, y][:-1]) * 1e-6
