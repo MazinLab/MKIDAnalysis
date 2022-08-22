@@ -1,119 +1,12 @@
 #!/usr/bin/env python
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import special, interpolate
+from scipy import special
+from mkidanalysis.pdfs import mr_icdf, gamma_icdf
 import mkidanalysis.speckle.photonstats_utils as utils
 from astropy.convolution import Gaussian2DKernel, convolve
 from mkidpipeline.photontable import Photontable
 import tables
-from scipy.stats import gamma
-import scipy
-
-
-def p_I(I, k=None, theta=None, mu=None, I_peak=None):
-    p = (((-np.log(I / I_peak) - mu) / theta) ** (k - 1) * np.exp((np.log(I / I_peak) + mu) / theta)) / (
-                special.gamma(k) * theta * I)
-    return p
-
-def p_A(x, gam=None, bet=None, alph=None):
-    pdf = gamma.pdf(x, alph, loc=gam, scale=1 / bet)
-    return pdf
-
-
-def gamma_icdf(median_strehl, Ip, bet=None, alph=None, interpmethod='cubic'):
-    """
-    :param sr: MEDIAN value of the strehl ratio
-    :param Ip:
-    :param gam:
-    :param bet:
-    :param alph:
-    :param interpmethod:
-    :return:
-    """
-    # compute mean and variance of gamma distribution
-    sr1 = 0.1  # max(0, mu - 15 * sig)
-    sr2 = 1.0  # min(mu + 15 * sig, 1.)
-    sr = np.linspace(sr1, sr2, 1000)
-    gam = -(median_strehl + (1 - median_strehl))
-    p_I = (1. / (2 * np.sqrt(sr))) * (p_A(np.sqrt(sr), gam=gam, alph=alph, bet=bet) +
-                                      p_A(-np.sqrt(sr), gam=gam, alph=alph, bet=bet))
-    norm = scipy.integrate.simps(p_I)
-    p_I /= norm
-    # go from strehls to intensities
-    I = (sr * Ip) / median_strehl
-    dI = I[1] - I[0]
-    I += dI / 2
-    cdf = np.cumsum(p_I) * dI
-    cdf /= cdf[-1]
-    # The integral is defined with respect to the bin edges.
-    I = np.asarray([0] + list(I + dI / 2))
-    cdf = np.asarray([0] + list(cdf))
-    # The interpolation scheme doesn't want duplicate values.  Pick
-    # the unique ones, and then return a function to compute the
-    # inverse of the CDF.
-    i = np.unique(cdf, return_index=True)[1]
-    return interpolate.interp1d(cdf[i], I[i], kind=interpmethod)
-
-
-def MRicdf(Ic, Is, interpmethod='cubic'):
-    """
-    Compute an interpolation function to give the inverse CDF of the
-    modified Rician with a given Ic and Is.
-
-    Arguments:
-    Ic: float, parameter for M-R
-    Is: float > 0, parameter for M-R
-
-    Optional argument:
-    interpmethod: keyword passed as 'kind' to interpolate.interp1d
-
-    Returns:
-    interpolation function f for the inverse CDF of the M-R
-
-    """
-
-    if Is <= 0 or Ic < 0:
-        raise ValueError("Cannot compute modified Rician CDF with Is<=0 or Ic<0.")
-
-    # Compute mean and variance of modified Rician, compute CDF by
-    # going 15 sigma to either side (but starting no lower than zero).
-    # Use 1000 points, or about 30 points/sigma.
-
-    mu = Ic + Is
-    sig = np.sqrt(Is ** 2 + 2 * Ic * Is)
-    I1 = max(0, mu - 15 * sig)
-    I2 = mu + 15 * sig
-    I = np.linspace(I1, I2, 1000)
-
-    # Grid spacing.  Set I to be offset by dI/2 to give the
-    # trapezoidal rule by direct summation.
-
-    dI = I[1] - I[0]
-    I += dI / 2
-
-    # Modified Rician PDF, and CDF by direct summation of intensities
-    # centered on the bins to be integrated.  Enforce normalization at
-    # the end since our integration scheme is off by a part in 1e-6 or
-    # something.
-
-    # p_I = 1./Is*np.exp(-(Ic + I)/Is)*special.iv(0, 2*np.sqrt(I*Ic)/Is)
-    p_I = 1. / Is * np.exp((2 * np.sqrt(I * Ic) - (Ic + I)) / Is) * special.ive(0, 2 * np.sqrt(I * Ic) / Is)
-
-    cdf = np.cumsum(p_I) * dI
-    cdf /= cdf[-1]
-
-    # The integral is defined with respect to the bin edges.
-
-    I = np.asarray([0] + list(I + dI / 2))
-    cdf = np.asarray([0] + list(cdf))
-
-    # The interpolation scheme doesn't want duplicate values.  Pick
-    # the unique ones, and then return a function to compute the
-    # inverse of the CDF.
-
-    i = np.unique(cdf, return_index=True)[1]
-    return interpolate.interp1d(cdf[i], I[i], kind=interpmethod)
-
 
 def corrsequence(Ttot, tau):
     """
@@ -184,7 +77,7 @@ def genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=0, interpmethod='cubic', taufa
         t, normal = corrsequence(int(Ttot * 1e6 / N), tau * 1e6 / N)
         uniform = 0.5 * (special.erf(normal / np.sqrt(2)) + 1)
         t *= N
-        f = MRicdf(Ic, Is, interpmethod=interpmethod)
+        f = mr_icdf(Ic, Is, interpmethod=interpmethod)
         I = f(uniform) / 1e6
     elif Is >= 0:
         N = max(N, 1000)
