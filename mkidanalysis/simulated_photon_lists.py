@@ -6,16 +6,19 @@ import matplotlib.pyplot as plt
 from mkidanalysis.speckle.generate_photons import corrsequence
 from mkidanalysis.pdfs import mr_icdf, gamma_icdf
 from progressbar import ProgressBar
+import astropy.units as u
+from scipy.stats import norm
+import random
 
 class MockPhotonList:
     def __init__(self, ic_image, is_image, ip_image, intt=30, tau=0.1, taufac=500, deadtime=10.e-6, mean_strehl=None,
                  background_rate=0, gamma_distributed=True, remove_background=False, beta=30, alpha=5,
-                 interpmethod='cubic'):
+                 interpmethod='cubic', background_wvl=1.7 * u.um, R=5):
         """
         Generate a mock photonlist from input Ic, Is, and Ip with deadtime accurately handled. Ic and Is define the modified
-        Rician fron which the speckle photons are sampled and Ip can either be taken to be constant or sampled from a Gamma
+        Rician from which the speckle photons are sampled and Ip can either be taken to be constant or sampled from a Gamma
         distribution. Background photons can also optionally be placed into the photon list and either removed before
-        returning (simulating a wavelength cut) or left in.
+        returning (simulating a wavelength cut) or left in. If R is not None, this wavelength cut will be 'imperfect'.
         :param ic_image: Constant component of the modified Rician (MR), in units of 1/second
         :param is_image: time variable component of the modified Rician (MR), in units of 1/second
         :param ip_image: Companion intensity, in units of 1/second
@@ -31,6 +34,8 @@ class MockPhotonList:
         :param background_rate: background count rate to add to the photonlist, in unit of counts/second
         :param remove_background: if True will insert then remove the specified background - simulates performing a
         wavelength cut on MKID data
+        :param background_wvl: astropy units quantity - wavelength of background source
+        :param R: energy resolution of the detector
         """
         self.Ic = ic_image
         self.Is = is_image
@@ -47,6 +52,8 @@ class MockPhotonList:
         self.interpmethod = interpmethod
         self.photon_list = None
         self.N = None
+        self.background_wvl = background_wvl
+        self.R = R
         assert np.shape(self.Ic) == np.shape(self.Is) == np.shape(self.Ip)
         self.photon_flags = np.zeros_like(self.Ic, dtype=np.ndarray)
         self.dts = np.zeros_like(self.Ic, dtype=np.ndarray)
@@ -55,6 +62,9 @@ class MockPhotonList:
             raise ValueError('Requesting Gamma distributed arrival time distribution from on axis sources but at least'
                              'one Gamma parameter is 0')
         self.gamma_distributed = gamma_distributed
+
+        # Do CDF fit to save a lot of time
+        self._cdf_fit()
         bar = ProgressBar(maxval=len(self.Ic.flatten())).start()
         bari = 0
         for (x, y), val in np.ndenumerate(self.Ic):
@@ -113,10 +123,7 @@ class MockPhotonList:
         plist3 = np.full_like(tlist_back, 2).astype(int)
         plist_tot = np.concatenate((plist1, plist2, plist3))
         if self.remove_background:
-            bkgd_exclude_keep = np.copy(keep)
-            bkgd_exclude_keep[np.where(plist_tot[indx] == 2)] = 0
-            self.photon_list[x, y] = tlist_tot[indx][np.where(bkgd_exclude_keep)]
-            self.photon_flags[x, y] = plist_tot[indx][np.where(bkgd_exclude_keep)]
+            self._remove_background((x, y), keep, tlist_tot[indx], plist_tot[indx])
         else:
             self.photon_list[x, y] = tlist_tot[indx][np.where(keep)]
             self.photon_flags[x, y] = plist_tot[indx]
@@ -135,3 +142,38 @@ class MockPhotonList:
         t *= self.N
         f = gamma_icdf(self.mean_strehl, Ip, bet=self.beta, alph=self.alpha, interpmethod=self.interpmethod)
         return f(uniform) / 1e6, t
+
+    def _remove_background(self, pixel, keep, tlist, plist):
+        x, y = pixel
+        bkgd_exclude_keep = np.copy(keep)
+        if self.R is not None:
+            assert self.R > 0
+            bkgd_nm = self.background_wvl.to(u.nm).value
+            b_std = bkgd_nm / self.R
+            b_cdf = norm.cdf(1375, loc=bkgd_nm, scale=b_std)
+            num_excluded = int((1 - b_cdf) * len(plist[plist == 2]))
+            bkgd_indxs = np.where(plist == 2)[0]
+            exclude = random.sample(set(bkgd_indxs), k=num_excluded)
+            bkgd_exclude_keep[exclude] = 0
+            # some companion photons will also be cut (especially near the edges)
+            c_indxs = np.where(plist != 2)[0]
+            c_wvls = [random.randint(900, 1375) for i in range(len(c_indxs))]
+            c_cdf = [self.f(wvl) for i, wvl in enumerate(c_wvls)]
+            bkgd_exclude_keep[c_indxs][draw(c_cdf)] = 0
+        else:
+            bkgd_exclude_keep[np.where(plist == 2)] = 0
+        self.photon_list[x, y] = tlist[np.where(bkgd_exclude_keep)]
+        self.photon_flags[x, y] = plist[np.where(bkgd_exclude_keep)]
+
+    def _cdf_fit(self):
+        func_wvls = np.arange(900, 1376, 5)
+        func_std = [wvl / self.R for wvl in func_wvls]
+        func_cdfs = [norm.cdf(900, loc=wvl, scale=func_std[i]) + (1 - norm.cdf(1375, loc=wvl, scale=func_std[i])) for
+                     i, wvl
+                     in enumerate(func_wvls)]
+        z = np.polyfit(func_wvls, func_cdfs, 3)
+        self.f = np.poly1d(z)
+
+
+def draw(percent):
+    return [random.randrange(100) < p * 100 for p in percent]
