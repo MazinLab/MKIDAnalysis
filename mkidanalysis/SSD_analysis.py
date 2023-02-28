@@ -200,10 +200,10 @@ class SSDAnalyzer:
         for pos, dither_pos in enumerate(self.data):
             for wcs_i, wcs_sol in enumerate(dither_pos['wcs_seq']):
                 cps = dither_pos[component][wcs_i]
-                driz = Drizzle(outwcs=ref_wcs, pixfrac=pixfrac)
                 if self.binned:
-                    cps[cps < 0] = 0
-                    cps[cps > 100] = 0
+                    cps[cps > 1e4] = 0
+                    cps[cps < 1] = 0
+                driz = Drizzle(outwcs=ref_wcs, pixfrac=pixfrac)
                 inwht = cps.astype(bool).astype(int)
                 wcs_sol.pixel_shape = (146, 140)
                 driz.add_image(cps, wcs_sol, inwht=inwht, in_units='cps')
@@ -289,7 +289,7 @@ def binned_ssd(fn, save=True, save_dir='', bin_size=0.01, read_noise=0.0, use_lu
             with pt.needed_ram():
                 for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
                     ts = pt.query(start=wcs_times[j] if startt > 0 else None,
-                                  intt=timestep if timestep > 0 else duration, resid=resID, column='time')
+                                  intt=timestep if timestep > 0 else None, resid=resID, column='time')
                     if len(ts) > 0:
                         if use_lucky:
                             lc_counts = np.array([int(c[pix[0], pix[1]]) for c in use_cubes])
@@ -311,11 +311,13 @@ def binned_ssd(fn, save=True, save_dir='', bin_size=0.01, read_noise=0.0, use_lu
                             IIc = mu / 2  # just create a reasonable seed
                             IIs = mu - IIc
                         Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs, effExpTime=bin_size)
-                        Ic_image[j][pix[0]][pix[1]] = Ic
-                        Is_image[j][pix[0]][pix[1]] = Is
+                        if np.isfinite(Ic) and np.isfinite(Is):
+                            Ic_image[j][pix[0]][pix[1]] = Ic
+                            Is_image[j][pix[0]][pix[1]] = Is
+                        else:
+                            pass
                     else:
-                        Ic_image[j][pix[0]][pix[1]] = 0
-                        Is_image[j][pix[0]][pix[1]] = 0
+                        pass
                     bari += 1
                     bar.update(bari)
             bar.finish()
@@ -376,8 +378,8 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
                 if use_lucky:
                     all_ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
                     dt = np.array([])
-                    for i, range in enumerate(use_ranges):
-                        idxs = np.where(np.logical_and(all_ts > range[0] * 1e6, all_ts < range[1] * 1e6))[0]
+                    for i, rnge in enumerate(use_ranges):
+                        idxs = np.where(np.logical_and(all_ts > rnge[0] * 1e6, all_ts < rnge[1] * 1e6))[0]
                         ts = all_ts[idxs]
                         dt_new = np.diff(np.sort(ts)) / 1e6
                         dt = np.append(dt, dt_new)
