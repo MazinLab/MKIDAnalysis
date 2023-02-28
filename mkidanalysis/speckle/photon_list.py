@@ -811,14 +811,17 @@ class mock_photonlist:
     Is pickle-able for easy save / load
     """
 
-    def __init__(self, Ic, Is, Ir, Ttot=30, tau=0.1, deadtime=10.e-6, mean_strehl=None):
+    def __init__(self, Ic, Is, Ir, Ttot=30, tau=0.1, deadtime=10.e-6, mean_strehl=None, background=0,
+                 gamma_distributed=True, remove_background=False, beta=30, alpha=5):
         self.p_true = np.asarray([Ic, Is, Ir])
         self.Ttot = Ttot
         self.tau = tau
         self.deadtime = deadtime
         np.random.seed()  # need this when making many mock_photonlists simultaneously with multiprocessing
         self.ts, self.ts_star, _ = genphotonlist(Ic, Is, Ir, Ttot, tau, deadtime=deadtime * 1e6, return_IDs=True,
-                                                 mean_strehl=mean_strehl)
+                                                 mean_strehl=mean_strehl, background_count_rate=background,
+                                                 gamma_distributed=gamma_distributed, beta=beta, alpha=alpha,
+                                                 remove_background=remove_background)
         self.dt = (self.ts[1:] - self.ts[:-1]) * 1e-6
         self.dt_star = (self.ts_star[1:] - self.ts_star[:-1]) * 1e-6
 
