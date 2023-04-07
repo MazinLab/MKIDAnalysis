@@ -19,7 +19,7 @@ from astropy.time import Time
 from astroplan import Observer
 from astropy.coordinates import SkyCoord
 import numpy as np
-from vip_hci.medsub import median_sub
+from vip_hci.psfsub.medsub import median_sub
 from scipy.ndimage import rotate
 from astropy.io import fits
 import matplotlib.pyplot as plt
@@ -29,6 +29,7 @@ import mkidpipeline.definitions as mkd
 import mkidpipeline.config as mkc
 
 log = logging.getLogger(__name__)
+
 
 class ADI():
     """
