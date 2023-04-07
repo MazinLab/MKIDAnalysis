@@ -3,10 +3,19 @@ Code to Perform Stochastic Speckle Discrimination (SSD) on MEC data
 
 Example Usage:
 
-ssd = SSDAnalyzer(h5_files=h5_files, fits_dir=save_folder + 'fits/', component_dir=save_folder, plot_dir=save_folder,
-                  ncpu=10, save_plot=True, set_ip_zero=False, binned=False)
-ssd.run_ssd()
 
+pipe_cfg ='/data/steiger/MEC/20210713/new/pipe.yaml'
+out_cfg='/data/steiger/MEC/20210713/new/out.yaml'
+data_cfg='/data/steiger/MEC/20210713/new/data.yaml'
+config.configure_pipeline(pipe_cfg)
+output = defs.MKIDOutputCollection(out_cfg, datafile=data_cfg)
+
+fits_folder = '/data/steiger/MEC/20210713/new/SSD/HR8799/binfree/fits'
+component_folder= '/data/steiger/MEC/20210713/new/SSD/HR8799/binfree/'
+ssd = SSDManager(output=output, fits_dir=fits_folder, component_dir=component_folder, ncpu=20, prior=None,
+                 prior_sig=None, set_ip_zero=False, binned=False, drizzle=True, lucky=False,
+                 adi_mode=False, deadtime=4e-5)
+ssd.run()
 '''
 import matplotlib.pyplot as plt
 import numpy as np
