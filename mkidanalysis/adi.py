@@ -20,6 +20,10 @@ from astroplan import Observer
 from astropy.coordinates import SkyCoord
 import numpy as np
 from vip_hci.psfsub.medsub import median_sub
+from vip_hci.psfsub.pca_fullfr import pca, pca_grid
+
+from vip_hci.psfsub import pca_annular
+from vip_hci.invprob import fmmf
 from scipy.ndimage import rotate
 from astropy.io import fits
 import matplotlib.pyplot as plt
@@ -29,7 +33,6 @@ import mkidpipeline.definitions as mkd
 import mkidpipeline.config as mkc
 
 log = logging.getLogger(__name__)
-
 
 class ADI():
     """
@@ -230,7 +233,8 @@ class ADI():
 
         return cls(obs_start, obs_end, target_coord, invert_angles, frame_dur, in_cube, site)
 
-    def run(self, plot=False, **kwargs):
+    def run(self, plot=False, func='med_sub', **kwargs):
+
         """
         Runs ADI algorithm
 
@@ -244,6 +248,8 @@ class ADI():
             final_res: combined, residual image
         """
         # Check to see if informational or not
+        self.func = func
+
         if not isinstance(self.data, np.ndarray):
             raise AttributeError('No data cube input, unable to run ADI!')
         else:
@@ -257,19 +263,10 @@ class ADI():
         self.ref_psf = np.median(ref_cube, axis=0)
 
         # Run ADI
-        out_cube, derot_cube, self.final_res = median_sub(cube,
-                                                          self.angles,
-                                                          full_output=True,
-                                                          **self.kwargs)
+        outs = globals()[self.func](cube, self.angles, **self.kwargs)
 
-        if plot:
-            fig, ax = plt.subplots(1, 2)
-            ax[0].imshow(self.ref_psf)
-            ax[1].imshow(self.final_res)
-            plt.show()
-
-        return {'unrot_cube': out_cube, 'derot_cube': derot_cube, 'final_res': self.final_res, 'ref_psf': self.ref_psf}
-
+        # return {'unrot_cube': out_cube, 'derot_cube': derot_cube, 'final_res': self.final_res, 'ref_psf': self.ref_psf}
+        return outs
     #def __repr__(self):
     #    kwgs = ', '.join([f'{kwarg}={val}' for kwarg, val in self.kwargs.items()])
     #    obs_times = f'obs_start={self.obs_start}, obs_end={self.obs_end}'
