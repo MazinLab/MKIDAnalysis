@@ -3,19 +3,10 @@ Code to Perform Stochastic Speckle Discrimination (SSD) on MEC data
 
 Example Usage:
 
+ssd = SSDAnalyzer(h5_files=h5_files, fits_dir=save_folder + 'fits/', component_dir=save_folder, plot_dir=save_folder,
+                  ncpu=10, save_plot=True, set_ip_zero=False, binned=False)
+ssd.run_ssd()
 
-pipe_cfg ='/data/steiger/MEC/20210713/new/pipe.yaml'
-out_cfg='/data/steiger/MEC/20210713/new/out.yaml'
-data_cfg='/data/steiger/MEC/20210713/new/data.yaml'
-config.configure_pipeline(pipe_cfg)
-output = defs.MKIDOutputCollection(out_cfg, datafile=data_cfg)
-
-fits_folder = '/data/steiger/MEC/20210713/new/SSD/HR8799/binfree/fits'
-component_folder= '/data/steiger/MEC/20210713/new/SSD/HR8799/binfree/'
-ssd = SSDManager(output=output, fits_dir=fits_folder, component_dir=component_folder, ncpu=20, prior=None,
-                 prior_sig=None, set_ip_zero=False, binned=False, drizzle=True, lucky=False,
-                 adi_mode=False, deadtime=4e-5)
-ssd.run()
 '''
 import matplotlib.pyplot as plt
 import numpy as np
@@ -147,6 +138,7 @@ class SSDAnalyzer:
         :param overwrite: bool, if True will overwrite existing fits file in the fits_dir
         :return:
         """
+        if not os.path.isdir(fits_dir): os.makedirs(fits_dir)
         if self.timestep and not self.binned:
             cubes = [self.ic_cube, self.is_cube, self.ip_cube]
             components = ['Ic', 'Is', 'Ip']
@@ -209,10 +201,10 @@ class SSDAnalyzer:
         for pos, dither_pos in enumerate(self.data):
             for wcs_i, wcs_sol in enumerate(dither_pos['wcs_seq']):
                 cps = dither_pos[component][wcs_i]
-                if self.binned:
-                    cps[cps > 1e4] = 0
-                    cps[cps < 1] = 0
                 driz = Drizzle(outwcs=ref_wcs, pixfrac=pixfrac)
+                # if self.binned:
+                #     cps[cps < 0] = 0
+                    # cps[cps > 100] = 0
                 inwht = cps.astype(bool).astype(int)
                 wcs_sol.pixel_shape = (146, 140)
                 driz.add_image(cps, wcs_sol, inwht=inwht, in_units='cps')
@@ -245,10 +237,16 @@ def calculate_components(fn_list, component_dir, ncpu=1, prior=None, prior_sig=N
     :return: None
     """
     if binned:
-        p = Pool(ncpu)
-        f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise,
+        if ncpu > 1:
+            p = Pool(ncpu)
+            f = partial(binned_ssd, save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise,
+                        use_lucky=lucky, timestep=timestep, startt=startt, duration=duration, adi_mode=adi_mode)
+            data = p.map(f, fn_list)
+            # data.sort(key=lambda k: fn_list.index(k['file']))
+        else:
+            print(ncpu)
+            for fn in fn_list: data = binned_ssd(fn , save=True, save_dir=component_dir, bin_size=bin_size, read_noise=read_noise,
                     use_lucky=lucky, timestep=timestep, startt=startt, duration=duration, adi_mode=adi_mode)
-        data = p.map(f, fn_list)
         data.sort(key=lambda k: fn_list.index(k['file']))
         return data
     else:
@@ -298,7 +296,7 @@ def binned_ssd(fn, save=True, save_dir='', bin_size=0.01, read_noise=0.0, use_lu
             with pt.needed_ram():
                 for pix, resID in pt.resonators(exclude=PROBLEM_FLAGS, pixel=True):
                     ts = pt.query(start=wcs_times[j] if startt > 0 else None,
-                                  intt=timestep if timestep > 0 else None, resid=resID, column='time')
+                                  intt=timestep if timestep > 0 else duration, resid=resID, column='time')
                     if len(ts) > 0:
                         if use_lucky:
                             lc_counts = np.array([int(c[pix[0], pix[1]]) for c in use_cubes])
@@ -320,13 +318,14 @@ def binned_ssd(fn, save=True, save_dir='', bin_size=0.01, read_noise=0.0, use_lu
                             IIc = mu / 2  # just create a reasonable seed
                             IIs = mu - IIc
                         Ic, Is, res = maxBinMRlogL(lc_counts, Ic_guess=IIc, Is_guess=IIs, effExpTime=bin_size)
-                        if np.isfinite(Ic) and np.isfinite(Is):
-                            Ic_image[j][pix[0]][pix[1]] = Ic
-                            Is_image[j][pix[0]][pix[1]] = Is
-                        else:
-                            pass
+                        Ic_image[j][pix[0]][pix[1]] = Ic
+                        Is_image[j][pix[0]][pix[1]] = Is
+                        # if fn == '/home/gstrampelli/work/out/HD153627/1650457461.h5' and pix == (117,28):
+                        #     print()
+
                     else:
-                        pass
+                        Ic_image[j][pix[0]][pix[1]] = 0
+                        Is_image[j][pix[0]][pix[1]] = 0
                     bari += 1
                     bar.update(bari)
             bar.finish()
@@ -376,7 +375,7 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
         Is_image = np.load(save_dir + 'Is/' + fn[-13:-3] + '.npy')
         Ip_image = np.load(save_dir + 'Ip/' + fn[-13:-3] + '.npy')
     else:
-        for j in range(ntimes):
+        for j in np.arange(ntimes):
             print(f'Running time {j} of {fn}')
             if use_lucky:
                 use_ranges = get_lucky(pt, 15, 30, startt=startt, duration=duration, bin_width=0.1, percent_best=0.3)
@@ -387,8 +386,8 @@ def binfree_ssd(fn, save=True, save_dir='', IptoZero=False, prior=None, prior_si
                 if use_lucky:
                     all_ts = pt.query(start=startt, intt=duration, resid=resID, column='time')
                     dt = np.array([])
-                    for i, rnge in enumerate(use_ranges):
-                        idxs = np.where(np.logical_and(all_ts > rnge[0] * 1e6, all_ts < rnge[1] * 1e6))[0]
+                    for i, range in enumerate(use_ranges):
+                        idxs = np.where(np.logical_and(all_ts > range[0] * 1e6, all_ts < range[1] * 1e6))[0]
                         ts = all_ts[idxs]
                         dt_new = np.diff(np.sort(ts)) / 1e6
                         dt = np.append(dt, dt_new)
@@ -492,7 +491,7 @@ def get_annulus_pixels(pt, annulus_idx):
     return centers
 
 
-def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], axes=None, fit_poisson=True):
+def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], axes=None, fit_poisson=True,binsize=0.01):
     """
     for a given 3D data array will plot the count rate histograms and perform a modified rician fit
     :param data: 3D data array
@@ -520,10 +519,11 @@ def plot_intensity_histogram(data, object_name='object', N=400, span=[0, 300], a
     if fit_poisson:
         axes.plot(binsS, fitPoisson, color='red', linestyle='-.',
                   label=r'Poisson fit to histogram' )
-    axes.set_xlabel('counts/20ms')
+    axes.set_xlabel('counts/%sms'%int(binsize*1000))
+
     axes.set_ylabel('Probability')
     axes.set_title(object_name)
-    axes.legend(prop={'size': 6}, loc='upper right')
+    axes.legend( loc='upper right')
     # axes.set_ylim(0, 0.2)
     return axes
 
