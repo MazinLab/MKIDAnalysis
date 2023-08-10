@@ -265,12 +265,7 @@ class ADI():
         # Run ADI
         outs = globals()[self.func](cube, self.angles, **self.kwargs)
 
-        # return {'unrot_cube': out_cube, 'derot_cube': derot_cube, 'final_res': self.final_res, 'ref_psf': self.ref_psf}
         return outs
-    #def __repr__(self):
-    #    kwgs = ', '.join([f'{kwarg}={val}' for kwarg, val in self.kwargs.items()])
-    #    obs_times = f'obs_start={self.obs_start}, obs_end={self.obs_end}'
-    #    return f'({obs_times}, full_output={self.full_output}, {kwgs})'
 
 
 def validate_science_target(target, times=None, deltat=None, startt=None, stopt=None):
